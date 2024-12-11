@@ -78,28 +78,32 @@ export class SqliteDB {
     }
 
     async execWithChanges(sql: string, params: any[]) {
-        let [stmt, err, tableName, opType] = convertToSelectStmt(sql);
-        if (err !== null) {
-            console.error(err);
-            return [];
+        try {
+            let [stmt, err, tableName, opType] = convertToSelectStmt(sql);
+            if (err !== null) {
+                return err;
+            }
+
+            // NOTE: Getting the state before and after the statement has fired like is done here is a pretty slow way of knowning what changed.
+            //       The sqlite update_hook() can give the info that a row was changed, but not what got changed. The ideal 
+            //       preupdate_hook() https://sqlite.org/c3ref/preupdate_count.html can give what is about to change, but is not part of this wasm build, 
+            //       but that would be the way to go i think.   jsaad 10 Dec. 2024
+            const pms = opType === 'insert' ? [] : params; // Strip any parameters to match the reduced select query
+            const before = await this.select<any[]>(stmt as string, pms);
+            err = await this.exec(sql, params);
+            if (err) return err;
+            const after = await this.select<any[]>(stmt as string, pms);
+
+            const changes = diff(this, before, after, tableName as string, opType as OpType);
+            // console.log(changes);
+
+            err = await saveChanges(this, changes);
+            if (err) return err;
+
+            await compactChanges(this);
+        } catch (e) {
+            return e;
         }
-
-        // NOTE: Getting the state before and after the statement has fired like is done here is a pretty slow way of knowning what changed.
-        //       The sqlite update_hook() can give the info that a row was changed, but not what got changed. The ideal 
-        //       preupdate_hook() https://sqlite.org/c3ref/preupdate_count.html can give what is about to change, but is not part of this wasm build, 
-        //       but that would be the way to go i think.   jsaad 10 Dec. 2024
-        const pms = opType === 'insert' ? [] : params; // Strip any parameters to match the reduced select query
-        const before = await this.select<any[]>(stmt as string, pms);
-        await this.exec(sql, params);
-        const after = await this.select<any[]>(stmt as string, pms);
-
-        const changes = diff(this, before, after, tableName as string, opType as OpType);
-        // console.log(changes);
-
-        err = await saveChanges(this, changes);
-        if (err !== undefined) return err;
-
-        await compactChanges(this);
     }
 
     async first<T>(sql: string, params: any[]) {
