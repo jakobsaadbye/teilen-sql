@@ -1,4 +1,7 @@
 {
+  "tasks" : {
+        "test" : "deno run test.ts"
+  },
   "imports": {
     "react": "npm:react@^19.0.0"
   },

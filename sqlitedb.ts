@@ -1,5 +1,4 @@
-import { applyChanges, Change, compactChanges, convertToSelectStmt, diff, OpType, saveChanges } from "./change.ts";
-import { data } from "./data.ts";
+import { compactChanges, convertToSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexRows } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -9,6 +8,7 @@ export class SqliteDB {
     #channelTableChange: BroadcastChannel
     siteId = "";
     pks: { [tblName: string]: string[] } = {};
+    crrColumns: { [tbl_name: string]: CrrColumn[] } = {};
 
     constructor(mp: MessagePort) {
         this.#mp = mp;
@@ -95,7 +95,9 @@ export class SqliteDB {
             const after = await this.select<any[]>(stmt as string, pms);
 
             const changes = diff(this, before, after, tableName as string, opType as OpType);
-            // console.log(changes);
+
+            const fiChanges = await saveFractionalIndexRows(this, changes);
+            changes.push(...fiChanges);
 
             err = await saveChanges(this, changes);
             if (err) return err;
@@ -126,6 +128,40 @@ export class SqliteDB {
 
         const { results, error } = await this.send('select', { sql, params });
         return { data: results as T, error };
+    }
+
+    async upgradeAllTablesToCrr() {
+        const frameworkMadeTables = ["crr_changes", "crr_client", "crr_columns", "crr_frac_index"];
+        const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
+        for (const table of tables) {
+            if (frameworkMadeTables.includes(table.name)) continue;
+            await this.upgradeTableToCrr(table.name);
+        }
+    }
+
+    async upgradeTableToCrr(tblName: string) {
+        const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
+        const values = columns.map(c => `('${tblName}', '${c.name}', 'lww', 'null')`).join(',');
+        const err = await this.exec(`
+            INSERT INTO "crr_columns"
+            VALUES ${values}
+            ON CONFLICT DO NOTHING
+        `, []);
+        if (err) return console.error(err);
+    }
+
+    async upgradeColumnToFractionalIndex(tblName: string, colId: string, parentColId: string) {
+        const err = await this.exec(`
+            UPDATE "crr_columns" 
+            SET type = 'fractional_index', parent_col_id = '${parentColId}'
+            WHERE tbl_name = '${tblName}' AND col_id = '${colId}'
+        `, []);
+        if (err) return console.error(err);
+    }
+
+    async finalizeUpgrades() {
+        const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
+        this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
     }
 
     private async extractPks() {

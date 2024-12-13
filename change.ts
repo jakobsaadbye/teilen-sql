@@ -1,9 +1,26 @@
 import { SqliteDB } from "./sqlitedb.ts"
 
+// NOTE: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
+
 export type Client = {
     site_id: string
     last_pulled_at: string
     last_pushed_at: string
+};
+
+export type CrrFracIndex = {
+    tbl_name: string
+    pk: string
+    parent_col_id: string
+    parent_id: string
+    after_id: string
+};
+
+export type CrrColumn = {
+    tbl_name: string
+    col_id: string
+    type: 'lww' | 'fractional_index'
+    parent_col_id: string // set if fractional_index otherwise its null
 };
 
 export type OpType = 'insert' | 'update' | 'delete'
@@ -18,10 +35,10 @@ export type Change = {
     created_at: number
     applied_at: number
     seq: number
-}
+};
 
 export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
-    const currentChanges = await db.select<Change[]>(`SELECT * FROM crr_changes`, []);
+    const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes"`, []);
     let currentUpdates = currentChanges.filter(c => c.type === 'update');
 
     const stmts = [];
@@ -30,6 +47,14 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     for (const insert of inserts) {
         const tblName = insert[0].tbl_name;
         const cols = insert.map(i => i.col_id);
+
+        const touchesFracIdx = db.crrColumns[tblName].findIndex(col => col.type === 'fractional_index' && cols.includes(col.col_id)) !== -1
+        if (touchesFracIdx) {
+            // 1. Get all other rows that are in group with the now inserted row
+
+            console.log("Insert contains fractional index column");
+        }
+
         const values = insert.map(i => i.value);
         const stmt = `
             INSERT INTO "${tblName}" (${cols.join(",")})
@@ -41,12 +66,11 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     const updates = groupById(changes.filter(c => c.type === 'update'));
     currentUpdates = currentUpdates.sort((a, b) => b.created_at - a.created_at);
     for (const update of updates) {
-        const changesToApply = [];
+        const changesToApply: Change[] = [];
         const tblName = update[0].tbl_name;
         const pk = update[0].pk;
 
         // Check if we should resurect a deleted row
-        // @Incomplete: Fix
         const priorDelete = await db.first<Change>(`SELECT * FROM "crr_changes" WHERE type = 'delete' AND tbl_name = ? AND pk = ?`, [tblName, pk]);
         if (priorDelete !== undefined) {
             console.log("Resurrecting row!");
@@ -54,10 +78,20 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
 
         for (const change of update) {
-            // TODO: Lookup metadata about the column for which CRDT datatype it has to determine how to update. For now its based soley on LWW
-            const shouldApply = shouldApplyUpdate(change, currentUpdates);
-            if (shouldApply) {
-                changesToApply.push(change)
+            const colType = db.crrColumns[change.tbl_name].find(col => col.col_id === change.col_id)?.type ?? null;
+            assert(colType !== null);
+
+            switch (colType) {
+                case 'fractional_index': {
+                    console.log("Change detected to a fractional index column!");
+                    break;
+                }
+                case 'lww': {
+                    const thisChangeWon = lwwWins(change, currentUpdates);
+                    if (thisChangeWon) {
+                        changesToApply.push(change)
+                    }
+                }
             }
         }
         if (changesToApply.length === 0) continue;
@@ -118,6 +152,57 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     return await saveChanges(db, changes);
 }
 
+export const saveFractionalIndexRows = async (db: SqliteDB, changes: Change[]): Promise<Change[]> => {
+    if (changes.length === 0) return [];
+
+    const inserts = groupById(changes.filter(c => c.type === 'insert'));
+    if (inserts.length === 0) return [];
+
+    const values = [];
+    for (const insert of inserts) {
+        const tblName = insert[0].tbl_name;
+        const pk = insert[0].pk;
+        const fiCol = db.crrColumns[tblName].find(col => col.tbl_name === tblName && col.type === 'fractional_index');
+        if (fiCol === undefined) continue;
+
+        const parentColId = fiCol.parent_col_id;
+        const parentId = insert.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null
+        const afterId = insert.find(c => c.col_id === fiCol.col_id)?.value ?? null
+        assert(parentColId && parentId && afterId !== null);
+
+        // Patch up the positions
+        {
+            let assignedAfterId = "";
+            const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_id = ? ORDER BY position ASC`, [tblName, parentId]);
+            if (items.length === 0) {
+                assignedAfterId = "0"
+            } else {
+                if (afterId === "-1") { // Prepend
+                    // Update the head to be after this id
+                } else if (afterId === "1") { // Append
+                    // Update the tail to 
+                } else {
+
+                }
+            }
+        }
+
+        values.push(`('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${afterId}', '0')`);
+    }
+    if (values.length === 0) return [];
+
+    const err = await db.exec(`
+        INSERT INTO "crr_frac_index" (tbl_name, pk, parent_col_id, parent_id, after_id, position)
+        VALUES ${values.join(',\n')}
+    `, []);
+    if (err) {
+        console.error(err);
+        return [];
+    }
+
+    return []; // @Incomplete
+}
+
 const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
     const changes = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ?`, [tblName, pk]);
     assert(changes.length > 0);
@@ -136,7 +221,7 @@ const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
     //       and NOT all previous values.
     const updates = changes.filter(c => c.type === 'update');
     if (updates.length === 0) return;
-    const latestUpdated: {[colId: string] : any} = {};
+    const latestUpdated: { [colId: string]: any } = {};
     const updatePerColumn = Object.groupBy(updates, ({ col_id }) => col_id as string);
     for (const [colId, updts] of Object.entries(updatePerColumn)) {
         const latestValue = updts!.sort((a, b) => b.created_at - a.created_at)[0].value;
@@ -223,8 +308,8 @@ export const compactChanges = async (db: SqliteDB) => {
     await db.exec(`DELETE FROM "crr_changes" WHERE id IN (${[...toDelete].map(id => `'${id}'`).join(',')})`, []);
 }
 
-const shouldApplyUpdate = (update: Change, currentUpdates: Change[]): boolean => {
-    // TODO: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
+const lwwWins = (update: Change, currentUpdates: Change[]): boolean => {
+    if (currentUpdates.length === 0) return true;
     const latestCurrentUpdate = currentUpdates.find(u => {
         if (u.tbl_name === update.tbl_name && u.col_id === update.col_id && u.pk === update.pk) {
             return u;
@@ -333,9 +418,7 @@ const decodePkToWhereClause = (db: SqliteDB, tblName: string, pk: string) => {
     return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} = '${value}'`).join(' AND ') + ")";
 }
 
-const decodePk = (db: SqliteDB, tblName: string, pk: string) : [colId: string, value: any][] => {
-    console.log(db.pks);
-    
+const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, value: any][] => {
     const pkCols = db.pks[tblName];
     assert(pkCols.length > 0);
     const values = pk.split('|');
