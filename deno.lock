@@ -1,7 +1,13 @@
 {
   "version": "4",
   "specifiers": {
+    "jsr:@std/assert@0.217": "0.217.0",
     "npm:react@19": "19.0.0"
+  },
+  "jsr": {
+    "@std/assert@0.217.0": {
+      "integrity": "c98e279362ca6982d5285c3b89517b757c1e3477ee9f14eb2fdf80a45aaa9642"
+    }
   },
   "npm": {
     "react@19.0.0": {

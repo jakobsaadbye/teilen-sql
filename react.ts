@@ -35,11 +35,11 @@ export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Pro
 
 
     useEffect(() => {
-        if (options?.dependency === false) return;  // Need to wait on some other query to run first
+        if (options?.dependency === false) return;
 
         let isMounted = true;
 
-        const goQuery = async () => {
+        const goQuery = () => {
             let run;
             if (typeof (sql) === 'string') {
                 run = db.select<T>(sql, params);

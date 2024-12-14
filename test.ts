@@ -1,27 +1,52 @@
-import { base57mid } from "./base57.ts";
-import { base57decode, base57encode } from "./base57.ts";
+import { fracMid } from "./frac.ts";
 
 const main = () => {
-    // const strs = [];
-    // const step = 0.001;
-    // let x = 0;
-    // while (x <= 0.1) {
-    //     const str = base57encode(x);
-    //     console.log(`${x} -> '${str}'`);
-    //     x += step;
-    //     strs.push(str);
-    // }
 
-    const a = base57encode(0.25);
-    const b = base57encode(0.75);
-    const c = base57mid(a, b);
+    const tests = [
+        ["[", "]", "5"],
+        ["5", "]", "8"],
+        ["8", "]", "9"],
+        ["9", "]", "95"],
+        ["98", "]", "99"],
+        ["99", "]", "995"],
 
-    console.log(c, base57decode(c));
-    
-    // for (const str of strs) {
-    //     const x = base57decode(str);
-    //     console.log(`${str} -> '${x}'`);
-    // }
+        ["1", "2", "15"],
+        ["1", "15", "13"],
+        ["001", "001002", "001001"],
+        ["001", "001001", "0010005"],
+
+        // OK
+        ["[", "5", "3"],
+        ["[", "3", "2"],
+        ["[", "2", "1"],
+        ["[", "1", "05"],
+        ["[", "11", "105"],
+        ["[", "111", "1105"],
+        ["[", "05", "03"],
+        ["[", "03", "02"],
+        ["[", "02", "01"],
+        ["[", "01", "005"],
+        ["[", "001", "0005"],
+
+        ["05", "1", "08"],
+        ["055", "110", "08"],
+        ["09", "1", "095"],
+        ["099", "1", "0995"],
+        ["0998", "1", "0999"],
+
+        ["499", "5", "4995"],
+        ["111", "1111", "11105"]
+    ];
+
+    for (const [a, b, wanted] of tests) {
+        const given = fracMid(a, b);
+        if (given === wanted) {
+            console.log(`PASS "${a}", "${b}", "${wanted}"`);
+        } else {
+            console.log(`FAIL "${a}", "${b}", "${wanted}", ${given}`);
+        }
+    }
 }
 
 main();
+

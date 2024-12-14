@@ -1,3 +1,4 @@
+import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
 // NOTE: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
@@ -13,7 +14,7 @@ export type CrrFracIndex = {
     pk: string
     parent_col_id: string
     parent_id: string
-    after_id: string
+    position: string
 };
 
 export type CrrColumn = {
@@ -175,10 +176,11 @@ export const saveFractionalIndexRows = async (db: SqliteDB, changes: Change[]): 
             let assignedAfterId = "";
             const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_id = ? ORDER BY position ASC`, [tblName, parentId]);
             if (items.length === 0) {
-                assignedAfterId = "0"
-            } else {
+                assignedAfterId = fracMid("[", "]");
+            } 
+            else {
                 if (afterId === "-1") { // Prepend
-                    // Update the head to be after this id
+                    assignedAfterId = fracMid("[", items[0].position);
                 } else if (afterId === "1") { // Append
                     // Update the tail to 
                 } else {
