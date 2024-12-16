@@ -1,4 +1,4 @@
-import { compactChanges, convertToSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexRows } from "./change.ts";
+import { compactChanges, convertToSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -97,7 +97,7 @@ export class SqliteDB {
 
             const changes = diff(this, before, after, tableName as string, opType as OpType);
 
-            await saveFractionalIndexRows(this, changes);
+            await saveFractionalIndexCols(this, changes);
 
             err = await saveChanges(this, changes);
             if (err) return err;
