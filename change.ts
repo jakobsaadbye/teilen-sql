@@ -177,22 +177,25 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
 
     const positionColName = fiCol.col_id;
     const parentColId = fiCol.parent_col_id;
-    const parentId = changeSet.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null // null when there is no re-parenting
     const afterId = changeSet.find(c => c.col_id === fiCol.col_id)?.value ?? null
     assert(afterId !== null);
     
-    // Patch up the positions in the crr_frac_index table and shadow the position in the affected row
-    const [position, trueAfterId, headChange] = await patchFracIdxPositions(db, tblName, parentColId, pk, afterId);
+    let parentId = changeSet.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null // null if only an update to the same list
+    
+    if (parentId === null && changeType === 'update') {
+        const item = await db.first<CrrFracIndex>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND pk = ?`, [tblName, pk]);
+        assert(item !== undefined);
+        parentId = item!.parent_id;
+    }
+    const position = await getFracIdxPosition(db, tblName, parentId, pk, afterId);
 
     let stmt = "";
     if (changeType === 'insert') {
         stmt = `
             BEGIN;
 
-            ${headChange};
-
-            INSERT INTO "crr_frac_index" (tbl_name, pk, parent_col_id, parent_id, after_id, position)
-            VALUES ('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${trueAfterId}', '${position}');
+            INSERT INTO "crr_frac_index" (tbl_name, pk, parent_col_id, parent_id, position)
+            VALUES ('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${position}');
 
             UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${decodePkToWhereClause(db, tblName, pk)};
 
@@ -200,15 +203,10 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
         `;
     }
     if (changeType === 'update') {
-        let fracIndexUpdate = "";
-        if (parentId === null) fracIndexUpdate = `UPDATE "crr_frac_index" SET                            position = '${position}', after_id = '${trueAfterId}' WHERE pk = '${pk}'`;
-        else                   fracIndexUpdate = `UPDATE "crr_frac_index" SET parent_id = '${parentId}', position = '${position}', after_id = '${trueAfterId}' WHERE pk = '${pk}'`;
         stmt = `
             BEGIN;
             
-            ${headChange};
-
-            ${fracIndexUpdate};
+            UPDATE "crr_frac_index" SET parent_id = '${parentId}', position = '${position}' WHERE pk = '${pk}';
 
             UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${decodePkToWhereClause(db, tblName, pk)};
 
@@ -223,55 +221,38 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
     }
 }
 
-const patchFracIdxPositions = async (db: SqliteDB, tblName: string, parentColId: string, pk: string, afterId: string) : Promise<[position: string, afterId: string, headChange: string]> => {
-    const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_col_id = ? ORDER BY position ASC`, [tblName, parentColId]);
-
-    if (items.length === 0) return [fracMid("[", "]"), "head", ""];
+const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: string, pk: string, afterId: string) : Promise<string> => {
+    const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_id = ? ORDER BY position ASC`, [tblName, parentId]);
+    if (items.length === 0) return fracMid("[", "]");
     
     if (afterId === "-1") { // Prepend
-        if (items[0].pk === pk) return [items[0].position, "head", ""]; // Placing head after itself
-
-        // Need to update current head to be after this item
-        const thisItem = items.find(item => item.pk === pk);
-        assert(thisItem !== undefined);
-
-        const headChange = `UPDATE "crr_frac_index" SET after_id ='${thisItem!.pk}' WHERE after_id = 'head'`;
-        const position = fracMid("[", items[0].position);
-        return [position, "head", headChange];
+        if (items[0].pk === pk) return items[0].position // Placing head after itself
+        return fracMid("[", items[0].position);
     } 
-
-    let headChange = "";
-    if (items[0].pk === pk) {
-        // Moving the head. Second item becomes the new head
-        if (items.length > 1) headChange = `UPDATE "crr_frac_index" SET after_id = 'head' WHERE pk = '${items[1].pk}'`;
-        else return [items[0].position, "head", ""]
-    }
-    if (afterId === "1") { // Append
-        const position = fracMid(items[items.length - 1].position, "]");
-        const afterId = items[items.length - 1].pk;
-        return [position, afterId, headChange]; 
-    } else {
+    else if (afterId === "1") { // Append
+        if (items[items.length - 1].pk === pk) return items[items.length - 1].position // Placing last item after itself
+        return fracMid(items[items.length - 1].position, "]");
+    } 
+    else { // Insert after item id
         if (afterId === pk) { // Placing after ourselves
             const thisItem = items.find(item => item.pk === pk);
             assert(thisItem !== undefined);
-            return [thisItem!.position, thisItem!.after_id, ""];
+            return thisItem!.position;
         }
 
         const afterIdx = items.findIndex(item => item.pk === afterId);
         const afterItem = items.find(item => item.pk === afterId);
         assert(afterIdx !== -1 && afterItem !== undefined);
 
-        if (afterIdx === items.length - 1) { // Append
-            const position = fracMid(items[items.length - 1].position, "]");
-            return [position, afterId, headChange];
+        if (afterIdx === items.length - 1) { // Append last item
+            return fracMid(items[items.length - 1].position, "]");
         } else { // In-between
             const itemA = items[afterIdx + 0];
             const itemB = items[afterIdx + 1];
             
-            if (itemB.pk === pk) return [itemB.position, itemB.after_id, ""]; // Placing above ourselves
+            if (itemB.pk === pk) return itemB.position; // Placing above ourselves
             
-            const mid = fracMid(itemA.position, itemB.position);
-            return [mid, afterId, headChange];
+            return fracMid(itemA.position, itemB.position);
         }
     }
 }
