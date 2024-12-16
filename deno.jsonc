@@ -1,6 +1,6 @@
 {
   "tasks" : {
-        "test" : "deno run test.ts"
+        "test" : "deno run fracTest.ts"
   },
   "imports": {
     "react": "npm:react@^19.0.0"

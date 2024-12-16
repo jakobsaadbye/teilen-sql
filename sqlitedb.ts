@@ -57,6 +57,7 @@ export class SqliteDB {
         tableName: string | null,
         rowid: bigint
     }) {
+        // NOTE: Unused but kept as it will come in handy when improving the way that new changes are recognized.
         // this.#channelTableChange.postMessage(change);
         // console.log(change);
     }
@@ -96,8 +97,7 @@ export class SqliteDB {
 
             const changes = diff(this, before, after, tableName as string, opType as OpType);
 
-            const fiChanges = await saveFractionalIndexRows(this, changes);
-            changes.push(...fiChanges);
+            await saveFractionalIndexRows(this, changes);
 
             err = await saveChanges(this, changes);
             if (err) return err;

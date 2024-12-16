@@ -1,7 +1,7 @@
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
-// NOTE: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
+// TODO: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
 
 export type Client = {
     site_id: string
@@ -14,6 +14,7 @@ export type CrrFracIndex = {
     pk: string
     parent_col_id: string
     parent_id: string
+    after_id: string
     position: string
 };
 
@@ -153,56 +154,86 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     return await saveChanges(db, changes);
 }
 
-export const saveFractionalIndexRows = async (db: SqliteDB, changes: Change[]): Promise<Change[]> => {
-    if (changes.length === 0) return [];
+export const saveFractionalIndexRows = async (db: SqliteDB, changes: Change[]) => {
+    if (changes.length === 0) return;
 
     const inserts = groupById(changes.filter(c => c.type === 'insert'));
-    if (inserts.length === 0) return [];
+    if (inserts.length === 0) return;
 
-    const values = [];
+    const origTableUpdates = [];
+    const crrFracIdxValues = [];
     for (const insert of inserts) {
+        // @Incomplete - Need to modify the changes that makes changes to fractional index columns to replace the value
+        //               with the computed position
+
         const tblName = insert[0].tbl_name;
         const pk = insert[0].pk;
         const fiCol = db.crrColumns[tblName].find(col => col.tbl_name === tblName && col.type === 'fractional_index');
         if (fiCol === undefined) continue;
 
+        const positionColName = fiCol.col_id;
         const parentColId = fiCol.parent_col_id;
         const parentId = insert.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null
-        const afterId = insert.find(c => c.col_id === fiCol.col_id)?.value ?? null
+        let afterId = insert.find(c => c.col_id === fiCol.col_id)?.value ?? null
         assert(parentColId && parentId && afterId !== null);
 
-        // Patch up the positions
+        // Patch up the positions in the crr_frac_index table and replicate it in the actual affected table
+        let position = "";
         {
-            let assignedAfterId = "";
             const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_id = ? ORDER BY position ASC`, [tblName, parentId]);
             if (items.length === 0) {
-                assignedAfterId = fracMid("[", "]");
+                position = fracMid("[", "]");
+                afterId = "head"
             } 
             else {
                 if (afterId === "-1") { // Prepend
-                    assignedAfterId = fracMid("[", items[0].position);
+                    position = fracMid("[", items[0].position);
+                    afterId = "head"
+                    // Need to update current head to be after this item
+                    const err = await db.exec(`UPDATE "${tblName}" SET after_id = ? WHERE after_id = 'head'`, [items[0].pk]);
+                    if (err) console.error(`Failed to update current head in saveFractionalIndexRows()`, err);
                 } else if (afterId === "1") { // Append
-                    // Update the tail to 
+                    console.log(`Last item position = ${items[items.length - 1].position}`);
+                    
+                    position = fracMid(items[items.length - 1].position, "]");
+                    afterId = items[items.length - 1].pk;
                 } else {
+                    const afterIdx = items.findIndex(i => i.after_id === afterId);
+                    assert(afterIdx !== -1);
 
+                    if (afterIdx === items.length - 1) { // Append
+                        position = fracMid(items[items.length - 1].position, "]");
+                    } else { // In-between
+                        const posA = items[afterIdx + 0].position;
+                        const posB = items[afterIdx + 1].position
+                        position = fracMid(posA, posB); 
+                    }
                 }
             }
+            const stmt = `UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${decodePkToWhereClause(db, tblName, pk)};`;
+            origTableUpdates.push(stmt);
         }
 
-        values.push(`('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${afterId}', '0')`);
+        crrFracIdxValues.push(`('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${afterId}', '${position}');`);
     }
-    if (values.length === 0) return [];
+    if (crrFracIdxValues.length === 0) return;
 
-    const err = await db.exec(`
+    const stmt = `
+        BEGIN;
+
         INSERT INTO "crr_frac_index" (tbl_name, pk, parent_col_id, parent_id, after_id, position)
-        VALUES ${values.join(',\n')}
-    `, []);
+        VALUES ${crrFracIdxValues.join(',\n')}
+
+        ${origTableUpdates.join(',\n')}
+
+        COMMIT;
+    `;
+    console.log(stmt);
+    const err = await db.exec(stmt, []);
     if (err) {
         console.error(err);
-        return [];
+        return;
     }
-
-    return []; // @Incomplete
 }
 
 const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
