@@ -71,14 +71,14 @@ export class SqliteDB {
         return data.error;
     }
 
-    async exec(sql: string, params: any[]) {
+    async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         if (this.#debug) console.info(sql);
         const data = await this.send('exec', { sql, params });
-        this.#channelTableChange.postMessage(sql);
+        if (options.notify) this.#channelTableChange.postMessage(sql);
         return data.error as Error;
     }
 
-    async execWithChanges(sql: string, params: any[]) {
+    async execTrackChanges(sql: string, params: any[]) {
         try {
             let [stmt, err, tableName, opType] = convertToSelectStmt(sql);
             if (err !== null) {
@@ -91,7 +91,7 @@ export class SqliteDB {
             //       but that would be the way to go i think.   jsaad 10 Dec. 2024
             const pms = opType === 'insert' ? [] : params; // Strip any parameters to match the reduced select query
             const before = await this.select<any[]>(stmt as string, pms);
-            err = await this.exec(sql, params);
+            err = await this.exec(sql, params, { notify: false });
             if (err) return err;
             const after = await this.select<any[]>(stmt as string, pms);
 
@@ -103,6 +103,9 @@ export class SqliteDB {
             if (err) return err;
 
             await compactChanges(this);
+
+            this.#channelTableChange.postMessage(tableName);
+            this.#channelTableChange.postMessage("crr_changes");
         } catch (e) {
             return e;
         }

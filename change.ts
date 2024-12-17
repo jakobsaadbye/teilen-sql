@@ -101,7 +101,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         const stmt = `
             UPDATE "${tblName}"
             SET ${changesToApply.map(c => `${c.col_id} = '${c.value}'`)}
-            WHERE ${decodePkToWhereClause(db, tblName, pk)}
+            WHERE ${pkEqual(db, tblName, pk)}
         `
         stmts.push(stmt);
     }
@@ -136,7 +136,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
     }
     for (const [tblName, pks] of Object.entries(rowsToDelete)) {
-        const condition = pks.map(pk => decodePkToWhereClause(db, tblName, pk)).join(' OR ');
+        const condition = pks.map(pk => pkEqual(db, tblName, pk)).join(' OR ');
         const stmt = `
             DELETE FROM "${tblName}"
             WHERE ${condition}
@@ -156,103 +156,109 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
 
 export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) => {
     if (changes.length === 0) return;
-    
-    // @Incomplete - Need to modify the changes that makes changes to fractional index columns to replace the value
-    //               with the computed position.
-    //               Also, need to account for multiple columns possibly being a fractional index, right now this assumes
-    //               only one.
-    const groupedChanges = groupById(changes);
-    assert(groupedChanges.length === 1);
-    const changeSet = groupedChanges[0];
-    const changeType = groupedChanges[0][0].type;
-    if (changeType === 'delete') return console.log(`Delete fractional index columns`); // @Incompelte
 
-    const tblName = changeSet[0].tbl_name;
-    const pk = changeSet[0].pk;
-    const fiCol = db.crrColumns[tblName].find(col => col.tbl_name === tblName && col.type === 'fractional_index');
+    const changeType = changes[0].type;
+    if (changeType === 'delete') return;
+
+    const tblName = changes[0].tbl_name;
+    const pk = changes[0].pk;
+
+    const changedCols = changes.map(c => c.col_id);
+    const fiCols = db.crrColumns[tblName].filter(col => col.tbl_name === tblName && col.type === 'fractional_index');
+    const fiCol = fiCols.find(col => changedCols.includes(col.col_id));
     if (fiCol === undefined) return; // Table doesn't have a fractional index column
-    const includesChangeToFracIdxColumn = changeSet.findIndex(c => c.col_id === fiCol.col_id) !== -1;
-    if (!includesChangeToFracIdxColumn) return;
 
+    const fiChangeIdx = changes.findIndex(c => c.col_id === fiCol.col_id);
+    if (fiChangeIdx === -1) return;
 
     const positionColName = fiCol.col_id;
     const parentColId = fiCol.parent_col_id;
-    const afterId = changeSet.find(c => c.col_id === fiCol.col_id)?.value ?? null
+    const afterId = changes.find(c => c.col_id === fiCol.col_id)?.value ?? null
     assert(afterId !== null);
-    
-    let parentId = changeSet.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null // null if only an update to the same list
-    
+
+    let parentChanged = false;
+    let parentId = changes.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null // null if only an update to the same list. We need to grab the parentId of the row that changed in order to get the other items with the same parent
+    if (parentId !== null) parentChanged = true;
     if (parentId === null && changeType === 'update') {
-        const item = await db.first<CrrFracIndex>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND pk = ?`, [tblName, pk]);
+        const item = await db.first<any>(`SELECT * FROM "${tblName}" WHERE ${pkEqual(db, tblName, pk)}`, []);
         assert(item !== undefined);
-        parentId = item!.parent_id;
+        parentId = item[parentColId];
     }
-    const position = await getFracIdxPosition(db, tblName, parentId, pk, afterId);
 
-    let stmt = "";
-    if (changeType === 'insert') {
-        stmt = `
-            BEGIN;
+    const position = await getFracIdxPosition(db, tblName, parentId, parentChanged, parentColId, positionColName, pk, afterId);
+    if (position === "-1" || position === "+1" || typeof(position) === "number") console.error("Position value is corrupted", position);
 
-            INSERT INTO "crr_frac_index" (tbl_name, pk, parent_col_id, parent_id, position)
-            VALUES ('${tblName}', '${pk}', '${parentColId}', '${parentId}', '${position}');
-
-            UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${decodePkToWhereClause(db, tblName, pk)};
-
-            COMMIT;
-        `;
-    }
-    if (changeType === 'update') {
-        stmt = `
-            BEGIN;
-            
-            UPDATE "crr_frac_index" SET parent_id = '${parentId}', position = '${position}' WHERE pk = '${pk}';
-
-            UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${decodePkToWhereClause(db, tblName, pk)};
-
-            COMMIT;
-        `;
-    }
-    console.log(stmt);
-    const err = await db.exec(stmt, []);
+    const stmt = `UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${pkEqual(db, tblName, pk)};`;
+    const err = await db.exec(stmt, [], { notify: false });
     if (err) {
         console.error(err);
         return;
     }
+
+    changes[fiChangeIdx].value = position;
 }
 
-const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: string, pk: string, afterId: string) : Promise<string> => {
-    const items = await db.select<CrrFracIndex[]>(`SELECT * FROM "crr_frac_index" WHERE tbl_name = ? AND parent_id = ? ORDER BY position ASC`, [tblName, parentId]);
+const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: string, parentChanged: boolean, parentColId: string, positionColId: string, pk: string, afterId: string): Promise<string> => {
+    const pci = positionColId;
+
+    const comparePk = (item: any, pkB: string): boolean => {
+        const pkA = pkValueOfRow(db, tblName, item);
+        return pkA === pkB;
+    }
+
+    // @Speed - Only select the pk, position and parent column, no need to select all the fields
+    let items = [];
+    if (parentChanged) {
+        items = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${parentColId} = ? AND ${pkNotEqual(db, tblName, pk)} ORDER BY ${positionColId} ASC`, [parentId]);
+    } else {
+        items = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${parentColId} = ? ORDER BY ${positionColId} ASC`, [parentId]);
+    }
     if (items.length === 0) return fracMid("[", "]");
-    
+
+
+    // @Hack - Inject the previous position of the changed item into itself, as the previous position is lost on save.
+    if (!parentChanged) {
+        let prevChange = await db.first<Change>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? AND col_id = ? ORDER BY created_at DESC`, [tblName, pk, positionColId]);
+        if (prevChange !== undefined) {
+            const changedItemIdx = items.findIndex(item => comparePk(item, pk));
+            assert(changedItemIdx !== -1);
+            if (typeof(prevChange.value) === 'number') prevChange.value = prevChange.value.toString();
+            items[changedItemIdx][positionColId] = prevChange.value;
+            items.sort((a, b) => a[pci] < b[pci] ? -1 : +1);
+        }
+    }
+
     if (afterId === "-1") { // Prepend
-        if (items[0].pk === pk) return items[0].position // Placing head after itself
-        return fracMid("[", items[0].position);
-    } 
-    else if (afterId === "1") { // Append
-        if (items[items.length - 1].pk === pk) return items[items.length - 1].position // Placing last item after itself
-        return fracMid(items[items.length - 1].position, "]");
-    } 
+        console.log(items);
+        
+        if (comparePk(items[0], pk)) return items[0][pci] // Placing head after itself
+        
+        return fracMid("[", items[0][pci]);
+    }
+    else if (afterId === "+1") { // Append
+        if (comparePk(items[items.length - 1], pk)) return items[items.length - 1][pci] // Placing last item after itself
+        return fracMid(items[items.length - 1][pci], "]");
+    }
     else { // Insert after item id
         if (afterId === pk) { // Placing after ourselves
-            const thisItem = items.find(item => item.pk === pk);
+            const thisItem = items.find(item => comparePk(item, pk));
             assert(thisItem !== undefined);
-            return thisItem!.position;
+            return thisItem![pci];
         }
 
-        const afterIdx = items.findIndex(item => item.pk === afterId);
-        const afterItem = items.find(item => item.pk === afterId);
+        const afterIdx = items.findIndex(item => comparePk(item, afterId));
+        const afterItem = items.find(item => comparePk(item, afterId));
         assert(afterIdx !== -1 && afterItem !== undefined);
 
         if (afterIdx === items.length - 1) { // Append last item
-            return fracMid(items[items.length - 1].position, "]");
+            return fracMid(items[items.length - 1][pci], "]");
         } else { // In-between
             const itemA = items[afterIdx + 0];
             const itemB = items[afterIdx + 1];
-            
-            if (itemB.pk === pk) return itemB.position; // Placing above ourselves
-            
-            return fracMid(itemA.position, itemB.position);
+
+            if (comparePk(itemB, pk)) return itemB[pci]; // Placing above ourselves
+
+            return fracMid(itemA[pci], itemB[pci]);
         }
     }
 }
@@ -284,7 +290,7 @@ const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
     err = await db.exec(`
         UPDATE "${tblName}"
         SET ${Object.entries(latestUpdated).map(([colId, value]) => `${colId}='${value}'`).join(',')}
-        WHERE ${decodePkToWhereClause(db, tblName, pk)}
+        WHERE ${pkEqual(db, tblName, pk)}
     `, []);
     if (err) console.error(err);
 }
@@ -309,7 +315,7 @@ export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
         VALUES ${values};
     `;
 
-    return await db.exec(sql, []);
+    return await db.exec(sql, [], { notify: false });
 }
 
 export const compactChanges = async (db: SqliteDB) => {
@@ -359,7 +365,7 @@ export const compactChanges = async (db: SqliteDB) => {
         }
     }
 
-    await db.exec(`DELETE FROM "crr_changes" WHERE id IN (${[...toDelete].map(id => `'${id}'`).join(',')})`, []);
+    await db.exec(`DELETE FROM "crr_changes" WHERE id IN (${[...toDelete].map(id => `'${id}'`).join(',')})`, [], { notify: false });
 }
 
 const lwwWins = (update: Change, currentUpdates: Change[]): boolean => {
@@ -468,8 +474,12 @@ const diffUpdate = (db: SqliteDB, before: any[], after: any[], tblName: string, 
     return changes;
 }
 
-const decodePkToWhereClause = (db: SqliteDB, tblName: string, pk: string) => {
+const pkEqual = (db: SqliteDB, tblName: string, pk: string) => {
     return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} = '${value}'`).join(' AND ') + ")";
+}
+
+const pkNotEqual = (db: SqliteDB, tblName: string, pk: string) => {
+    return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} != '${value}'`).join(' AND ') + ")";
 }
 
 const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, value: any][] => {
