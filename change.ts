@@ -595,7 +595,7 @@ export const sqlAsSelectStmt = (sql: string) => {
             s.shift();
             s.shift();
             const tableName = s[0];
-            return [`SELECT * FROM ${tableName}`, null, tableName.replaceAll(`"`, ''), 'insert'];
+            return [`SELECT * FROM ${tableName}`, null, tableName.replaceAll(`"`, '').trim(), 'insert'];
         }
         case "update": {
             s.shift();
@@ -605,7 +605,7 @@ export const sqlAsSelectStmt = (sql: string) => {
                 return [null, "Missign WHERE clause in UPDATE statement"];
             }
             const condition = s.slice(whereIndex + 1).join(' ');
-            return [`SELECT * FROM ${tableName} WHERE ${condition}`, null, tableName.replaceAll(`"`, ''), 'update']
+            return [`SELECT * FROM ${tableName} WHERE ${condition}`, null, tableName.replaceAll(`"`, '').trim(), 'update']
         }
         case "delete": {
             s.shift();
@@ -614,10 +614,10 @@ export const sqlAsSelectStmt = (sql: string) => {
             s.shift();
             s.shift();
             const condition = s.join(' ');
-            return [`SELECT * FROM ${tableName} WHERE ${condition}`, null, tableName.replaceAll(`"`, ''), 'delete'];
+            return [`SELECT * FROM ${tableName} WHERE ${condition}`, null, tableName.replaceAll(`"`, '').trim(), 'delete'];
         }
         default:
-            return [null, `Unknown start of sql statement in convertToSelectStmt(). Starts with ${s[0]}`];
+            return [null, `Unknown start of sql statement in sqlAsSelectStmt(). Starts with ${s[0]}`];
     }
 }
 
@@ -632,18 +632,18 @@ export const sqlExplainExec = (sql: string) : string => {
             s.shift();
             s.shift();
             const tableName = s[0];
-            return tableName.replaceAll(`"`, '');
+            return tableName.replaceAll(`"`, '').trim();
         }
         case "update": {
             s.shift();
             const tableName = s[0];
-            return tableName.replaceAll(`"`, '');
+            return tableName.replaceAll(`"`, '').trim();
         }
         case "delete": {
             s.shift();
             s.shift();
             const tableName = s[0];
-            return tableName.replaceAll(`"`, '');
+            return tableName.replaceAll(`"`, '').trim();
         }
         default: {
             return "";

@@ -75,11 +75,10 @@ export class SqliteDB {
     }
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
-        if (this.#debug) console.info(sql);
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
-            console.log(tblName);
+            if (tblName === "") console.error(`Couldn't extract tablename of stmt '${sql}'`);
             this.#channelTableChange.postMessage(tblName);
         };
         return data.error as Error;
