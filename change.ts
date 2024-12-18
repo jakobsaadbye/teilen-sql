@@ -152,7 +152,7 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
         parentId: string
         posColId: string
     };
-    const tables: { [tblName: string]: {[parentId: string] : List} } = {};
+    const tables: { [tblName: string]: { [parentId: string]: List } } = {};
     for (const changeSet of fiChanges) {
         const pk = changeSet[0].pk;
         const tblName = changeSet[0].tbl_name;
@@ -181,7 +181,7 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
         }
 
         if (tables[tblName] !== undefined) tables[tblName][parentId] = { parentColId, parentId, posColId };
-        else                               tables[tblName] = {[parentId] : { parentColId, parentId, posColId }};
+        else tables[tblName] = { [parentId]: { parentColId, parentId, posColId } };
     }
 
     const patchStmts = [];
@@ -197,19 +197,19 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
 
             const itemPks = items.map(item => pkEncodingOfRow(db, tblName, item));
             const lastChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk IN ${sqlArray(itemPks)} AND col_id = '${posColId}' ORDER BY created_at DESC`, []);
-            
+
             const comparePk = (item: any, pkB: string): boolean => {
                 const pkA = pkEncodingOfRow(db, tblName, item);
                 return pkA === pkB;
             }
-            
+
             type Pair = [idx: number, item: any, change: Change]
-            const pairs : Pair[] = [];
+            const pairs: Pair[] = [];
             for (let i = 0; i < items.length; i++) {
                 const item = items[i];
                 const posChange = lastChanges.find(change => comparePk(item, change.pk));
-                if (posChange === undefined) { 
-                    console.error(`Failed to get last change of item"`, item); 
+                if (posChange === undefined) {
+                    console.error(`Failed to get last change of item"`, item);
                 }
                 pairs.push([i, item, posChange as Change]);
             }
@@ -218,14 +218,14 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
             for (const [pos, group] of Object.entries(positionGroups)) {
                 if (group!.length > 1) {
                     console.log(`Detected collision in table '${tblName}', ${list.parentColId} '${list.parentId}' on position '${pos}'`);
-                    
+
                     // Collision on a position!
                     // Resolve by last-writer-wins. The last writer, gets to be below the other. 
                     // NOTE: Maybe it should be an option when upgrading to a fractional index, to choose weather the last writer gets below or above
-                    const sorted = group!.toSorted(([,,changeA], [,,changeB]) => isLastWriter(changeA, changeB) ? +1 : -1);
+                    const sorted = group!.toSorted(([, , changeA], [, , changeB]) => isLastWriter(changeA, changeB) ? +1 : -1);
 
                     // First item in the sorted collisions will just stay put as the anchor point for the rest of the collisions to go after.
-                    const [,head] = sorted[0];
+                    const [, head] = sorted[0];
                     const nextIdx = 1 + Math.max(...sorted.map(([idx,]) => idx));
 
                     const anchorA = head[posColId] as string;
@@ -236,15 +236,15 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
                     } else {
                         anchorB = items[nextIdx][posColId];
                     }
-                    
+
                     for (let j = sorted.length - 1; j > 0; j--) {
                         if (j === sorted.length - 1) {
-                            let [,tail] = sorted[j];
+                            let [, tail] = sorted[j];
                             const position = fracMid(anchorA, anchorB);
                             tail[posColId] = position;
                         } else {
-                            let [,item] = sorted[j];
-                            let [,prev] = sorted[j + 1];
+                            let [, item] = sorted[j];
+                            let [, prev] = sorted[j + 1];
                             const position = fracMid(anchorA, prev[posColId]);
                             item[posColId] = position
                         }
@@ -636,23 +636,9 @@ export const sqlArray = (a: any[]) => {
     return `(${a.map(v => `'${v}'`).join(',')})`;
 }
 
-export const sqlAffectedTable = (sql: string) : string => {
+export const sqlExplainExec = (sql: string) : string => {
     const s = sql.trim().split(' ');
     switch (s[0].toLowerCase()) {
-        case "select": {
-            s.shift();
-            const fromIndex = s.findIndex(tok => tok.toLowerCase() === "from");
-            const after = s.slice(fromIndex + 1).join(' ').trimStart();
-            
-            let i = 0;
-            for (const c of [...after]) {
-                if (c === ' ') break;
-                i++;
-            }
-
-            const tableName = [...after].slice(0, i).join('');
-            return tableName.replaceAll(`"`, '');
-        }
         case "insert": {
             s.shift();
             s.shift();
@@ -670,20 +656,41 @@ export const sqlAffectedTable = (sql: string) : string => {
             const tableName = s[0];
             return tableName.replaceAll(`"`, '');
         }
+        default: {
+            return "";
+        }
+    }
+}
+
+export const sqlExplainQuery = async (db: SqliteDB, sql: string): Promise<string[]> => {
+    const s = sql.trim().split(' ');
+    switch (s[0].toLowerCase()) {
         case "pragma": {
             s.shift();
             if (s[0].includes("table_info")) {
                 const split = s[0].split("(");
                 if (split.length > 1) {
                     const tblName = split[1].replaceAll("'", "").replaceAll(")", "");
-                    return tblName
+                    return [tblName]
                 }
             }
-            return "";
+            return [];
+        }
+        case "select": {
+            const rows = await db.select<{ detail: string }[]>(`EXPLAIN QUERY PLAN ${sql}`, []);
+            if (rows.length === 0) return [];
+            const tblNames = [];
+            for (const row of rows) {
+                if (row.detail.includes("SCAN")) {
+                    const tblName = row.detail.split(" ")[1];
+                    tblNames.push(tblName)
+                }
+            }
+            return tblNames;
         }
         default: {
             // console.log(`In sqlAffectedTable(). Couldn't infer table name from '${sql}'`);
-            return "";
+            return [];
         }
     }
 

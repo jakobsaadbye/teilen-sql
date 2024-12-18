@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { SqliteDB } from './sqlitedb.ts';
 import { Syncer } from "./syncer.ts";
-import { sqlAffectedTable } from "./change.ts";
+import { sqlExplainQuery } from "./change.ts";
 
 export const SqliteContext = createContext<SqliteDB | null>(null);
 
@@ -22,7 +22,7 @@ type UseQueryOptions = {
     dependencies?: string[] // List of table names that if updated re-runs the query. Only needed to be specified if passed a function that can run arbitrary sql stmts. Otherwise the affected table is infered from the sql query
 }
 
-export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Promise<T>), params: any[], options?: UseQueryOptions) => {
+export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Promise<T>), params: any[], options?: UseQueryOptions) : {data: T, error: any, isLoading: boolean} => {
     const db = useContext(SqliteContext);
     if (db === null) {
         throw new Error(`Failed to retreive db from context. Make sure the components useQuery is used in, is inside of a SqliteContext.Provider`)
@@ -37,12 +37,9 @@ export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Pro
 
     
     useEffect(() => {
-        let dependencies = [];
+        let dependencies: string[] | undefined = undefined;
         if (typeof(sql) === 'function') dependencies = options?.dependencies ?? [];
-        else {
-            const tblName = sqlAffectedTable(sql);
-            dependencies = tblName !== "" ? [tblName] : [];
-        }
+        else sqlExplainQuery(db, sql).then(deps => dependencies = deps).catch(() => dependencies = []);
 
         if (options?.fireIf === false) return;
 

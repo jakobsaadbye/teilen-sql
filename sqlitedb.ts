@@ -1,4 +1,4 @@
-import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlAffectedTable } from "./change.ts";
+import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlExplainExec } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -78,7 +78,7 @@ export class SqliteDB {
         if (this.#debug) console.info(sql);
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
-            const tblName = sqlAffectedTable(sql);
+            const tblName = sqlExplainExec(sql);
             this.#channelTableChange.postMessage(tblName);
         };
         return data.error as Error;
