@@ -46,6 +46,9 @@ export class SqliteDB {
                 }
             })
             .catch(e => console.error("Failed to get site_id", e));
+        
+        // Enable foreign key constraints
+        this.exec(`PRAGMA foreign_keys = ON`, []);
 
         // Extract the primary keys of tables to be used in changes
         this.extractPks();

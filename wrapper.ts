@@ -1,5 +1,5 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { CrrColumn } from "./sqlitedb.ts";
+import { CrrColumn } from "./change.ts";
 
 export class SqliteDBWrapper {
     #db: Database
@@ -8,6 +8,8 @@ export class SqliteDBWrapper {
 
     constructor(db: Database) {
         this.#db = db;
+
+        this.exec(`PRAGMA foreign_keys = ON`, []);
 
         this.extractPks().catch(e => console.error(e));
         this.finalizeUpgrades().catch(e => console.error(e));
@@ -42,7 +44,7 @@ export class SqliteDBWrapper {
 
     async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
-        const values = columns.map(c => `('${tblName}', '${c.name}', 'lww')`).join(',');
+        const values = columns.map(c => `('${tblName}', '${c.name}', 'lww', '')`).join(',');
         const err = await this.exec(`
             INSERT INTO "crr_columns"
             VALUES ${values}
@@ -51,10 +53,10 @@ export class SqliteDBWrapper {
         if (err) return console.error(err);
     }
 
-    async upgradeColumnToFractionalIndex(tblName: string, colId: string) {
+    async upgradeColumnToFractionalIndex(tblName: string, colId: string, parentColId: string) {
         const err = await this.exec(`
             UPDATE "crr_columns" 
-            SET type = 'fractional_index'
+            SET type = 'fractional_index', parent_col_id = '${parentColId}'
             WHERE tbl_name = '${tblName}' AND col_id = '${colId}'
         `, []);
         if (err) return console.error(err);
@@ -69,7 +71,7 @@ export class SqliteDBWrapper {
         const pks: { [tblName: string]: string[] } = {};
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
-            const columns = await this.select(`PRAGMA table_info('${table.name}')`, []);
+            const columns = await this.select<{ pk: number, name: string }[]>(`PRAGMA table_info('${table.name}')`, []);
             pks[table.name] = columns.filter(c => c.pk !== 0).map(c => c.name);
         }
         this.pks = pks;
