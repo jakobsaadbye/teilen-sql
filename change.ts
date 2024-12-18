@@ -68,22 +68,9 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
 
         for (const change of update) {
-            const colType = db.crrColumns[change.tbl_name].find(col => col.col_id === change.col_id)?.type ?? 'lww';
-            switch (colType) {
-                case 'fractional_index': {
-                    const prevChange = findPreviousChangeToSameColumn(change.col_id as string);
-                    if (isLastWriter(change, prevChange)) {
-                        changesToApply.push(change);
-                    }
-                    break;
-                }
-                case 'lww': {
-                    const prevChange = findPreviousChangeToSameColumn(change.col_id as string);
-                    if (isLastWriter(change, prevChange)) {
-                        changesToApply.push(change);
-                    }
-                    break;
-                }
+            const prevChange = findPreviousChangeToSameColumn(change.col_id as string);
+            if (isLastWriter(change, prevChange)) {
+                changesToApply.push(change);
             }
         }
         if (changesToApply.length === 0) continue;

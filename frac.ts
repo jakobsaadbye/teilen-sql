@@ -12,7 +12,7 @@ import { assert } from "jsr:@std/assert@^0.217.0/assert";
  */
 
 export const BASE_10_DIGITS = "0123456789";
-export const BASE_62_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+export const BASE_52_DIGITS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /**
  * @param a First fractional index anchor, "[" denotes start of list
@@ -20,7 +20,7 @@ export const BASE_62_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm
  * @param digits Any base encoding. Defaults to Base62
  * @returns Fractional index between a and b
  */
-export const fracMid = (a: string, b: string, digits = BASE_62_DIGITS) => {
+export const fracMid = (a: string, b: string, digits = BASE_52_DIGITS) => {
     assert(a === "[" || b === "]" || a < b, `${a} >= ${b}`);
 
     if (a === "[" && b === "]") return digits[Math.round(digits.length / 2)];

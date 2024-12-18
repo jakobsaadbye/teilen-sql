@@ -79,6 +79,7 @@ export class SqliteDB {
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
+            console.log(tblName);
             this.#channelTableChange.postMessage(tblName);
         };
         return data.error as Error;
@@ -127,8 +128,6 @@ export class SqliteDB {
     }
 
     async select<T>(sql: string, params: any[]) {
-        console.log(sql);
-        
         const { data: results, error } = await this.selectWithError(sql, params);
         if (error) throw new Error(error);
         return results as T;

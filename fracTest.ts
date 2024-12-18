@@ -1,9 +1,9 @@
 import { assert } from "jsr:@std/assert@0.217/assert";
-import { BASE_10_DIGITS, BASE_62_DIGITS, fracMid } from "./frac.ts";
+import { BASE_10_DIGITS, BASE_52_DIGITS, fracMid } from "./frac.ts";
 
 const main = () => {
     fracMidBase10();
-    fracMidBase62();
+    fracMidBase52();
     fracMidAppendOnly();
 }
 
@@ -55,16 +55,15 @@ const fracMidBase10 = () => {
     }
 }
 
-const fracMidBase62 = () => {
+const fracMidBase52 = () => {
     const tests = [
-        ["[", "]", "V"],
+        ["[", "]", "a"],
         ["V", "]", "l"],
         ["l", "]", "t"],
-        ["[", "9", "5"],
     ];
 
     for (const [a, b, wanted] of tests) {
-        const given = fracMid(a, b, BASE_62_DIGITS);
+        const given = fracMid(a, b, BASE_52_DIGITS);
         assert(typeof(given) === 'string');
         if (given === wanted) {
             console.log(`PASS "${a}", "${b}", "${wanted}"`);
