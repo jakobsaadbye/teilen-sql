@@ -637,7 +637,7 @@ export const sqlArray = (a: any[]) => {
 }
 
 export const sqlAffectedTable = (sql: string) : string => {
-    let s = sql.trim().split(' ');
+    const s = sql.trim().split(' ');
     switch (s[0].toLowerCase()) {
         case "select": {
             s.shift();
@@ -670,8 +670,19 @@ export const sqlAffectedTable = (sql: string) : string => {
             const tableName = s[0];
             return tableName.replaceAll(`"`, '');
         }
+        case "pragma": {
+            s.shift();
+            if (s[0].includes("table_info")) {
+                const split = s[0].split("(");
+                if (split.length > 1) {
+                    const tblName = split[1].replaceAll("'", "").replaceAll(")", "");
+                    return tblName
+                }
+            }
+            return "";
+        }
         default: {
-            console.log(`In sqlAffectedTable(). Couldn't infer table name from '${sql}'`);
+            // console.log(`In sqlAffectedTable(). Couldn't infer table name from '${sql}'`);
             return "";
         }
     }
