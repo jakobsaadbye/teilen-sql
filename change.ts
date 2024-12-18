@@ -133,7 +133,9 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         return err;
     }
 
-    // Patch any fractional index columns that might have collided
+    // Patch any fractional index columns that might have collided. 
+    // NOTE(**important**): Must run after all the changes have been applied 
+    // so that all rows are known about
     await fixAnyFractionalIndexCollisions(db, groupById(changes));
 }
 

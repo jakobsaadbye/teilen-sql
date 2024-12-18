@@ -35,11 +35,17 @@ export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Pro
     const [counter, setCounter] = useState(0); // Used to re-run the effect on a table change
     const rerender = () => setCounter(counter + 1);
 
-    
     useEffect(() => {
         let dependencies: string[] | undefined = undefined;
         if (typeof(sql) === 'function') dependencies = options?.dependencies ?? [];
-        else sqlExplainQuery(db, sql).then(deps => dependencies = deps).catch(() => dependencies = []);
+        else {
+            if (options && options.dependencies && options.dependencies.length > 0) dependencies = options.dependencies;
+            else {
+                sqlExplainQuery(db, sql)
+                    .then(deps => dependencies = deps)
+                    .catch(() => dependencies = []);
+            }
+        } 
 
         if (options?.fireIf === false) return;
 
