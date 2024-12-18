@@ -1,4 +1,4 @@
-import { compactChanges, convertToSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols } from "./change.ts";
+import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlAffectedTable } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -77,21 +77,24 @@ export class SqliteDB {
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         if (this.#debug) console.info(sql);
         const data = await this.send('exec', { sql, params });
-        if (options.notify) this.#channelTableChange.postMessage(sql);
+        if (options.notify) {
+            const tblName = sqlAffectedTable(sql);
+            this.#channelTableChange.postMessage(tblName);
+        };
         return data.error as Error;
     }
 
     async execTrackChanges(sql: string, params: any[]) {
         try {
-            let [stmt, err, tableName, opType] = convertToSelectStmt(sql);
+            let [stmt, err, tableName, opType] = sqlAsSelectStmt(sql);
             if (err !== null) {
                 return err;
             }
 
-            // NOTE: Getting the state before and after the statement has fired like is done here is a pretty slow way of knowning what changed.
-            //       The sqlite update_hook() can give the info that a row was changed, but not what got changed. The ideal 
-            //       preupdate_hook() https://sqlite.org/c3ref/preupdate_count.html can give what is about to change, but is not part of this wasm build, 
-            //       but that would be the way to go i think.   jsaad 10 Dec. 2024
+            // @Speed: Getting the state before and after the statement has fired like is done here is a pretty slow way of knowning what changed.
+            //         The sqlite update_hook() can give the info that a row was changed, but not what got changed. The ideal 
+            //         preupdate_hook() https://sqlite.org/c3ref/preupdate_count.html can give what is about to change, but is not part of this wasm build, 
+            //         but that would be the way to make this more efficient.   jsaad 10 Dec. 2024
             const pms = opType === 'insert' ? [] : params; // Strip any parameters to match the reduced select query
             const before = await this.select<any[]>(stmt as string, pms);
             err = await this.exec(sql, params, { notify: false });
@@ -124,6 +127,8 @@ export class SqliteDB {
     }
 
     async select<T>(sql: string, params: any[]) {
+        console.log(sql);
+        
         const { data: results, error } = await this.selectWithError(sql, params);
         if (error) throw new Error(error);
         return results as T;

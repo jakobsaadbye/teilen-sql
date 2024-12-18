@@ -599,7 +599,7 @@ const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
     return Object.entries(row).filter(([colId, _]) => pkCols.includes(colId)).map(([_, value]) => value).join('|');
 }
 
-export const convertToSelectStmt = (sql: string) => {
+export const sqlAsSelectStmt = (sql: string) => {
     const s = sql.trim().split(' ');
     switch (s[0].toLowerCase()) {
         case "insert": {
@@ -632,10 +632,48 @@ export const convertToSelectStmt = (sql: string) => {
     }
 }
 
-const sqlArray = (a: any[]) => {
+export const sqlArray = (a: any[]) => {
     return `(${a.map(v => `'${v}'`).join(',')})`;
 }
 
-const panic = () => {
-    throw new Error("Code path got reached which shouldn't have gotten reached!");
+export const sqlAffectedTable = (sql: string) : string => {
+    let s = sql.trim().split(' ');
+    switch (s[0].toLowerCase()) {
+        case "select": {
+            s.shift();
+            const fromIndex = s.findIndex(tok => tok.toLowerCase() === "from");
+            const after = s.slice(fromIndex + 1).join(' ').trimStart();
+            
+            let i = 0;
+            for (const c of [...after]) {
+                if (c === ' ') break;
+                i++;
+            }
+
+            const tableName = [...after].slice(0, i).join('');
+            return tableName.replaceAll(`"`, '');
+        }
+        case "insert": {
+            s.shift();
+            s.shift();
+            const tableName = s[0];
+            return tableName.replaceAll(`"`, '');
+        }
+        case "update": {
+            s.shift();
+            const tableName = s[0];
+            return tableName.replaceAll(`"`, '');
+        }
+        case "delete": {
+            s.shift();
+            s.shift();
+            const tableName = s[0];
+            return tableName.replaceAll(`"`, '');
+        }
+        default: {
+            console.log(`In sqlAffectedTable(). Couldn't infer table name from '${sql}'`);
+            return "";
+        }
+    }
+
 }
