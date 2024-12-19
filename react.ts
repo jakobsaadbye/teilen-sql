@@ -93,6 +93,7 @@ export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Pro
         } else {
             bc.addEventListener('message', (e) => {
                 const changedTable: string = e.data;
+                if (changedTable === "") return fire();
                 if (dependencies.length > 0) {
                     if (dependencies.includes(changedTable)) {
                         fire();
