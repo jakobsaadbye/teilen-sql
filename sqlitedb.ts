@@ -183,7 +183,7 @@ export class SqliteDB {
                 return changeSet;
             }
             case "delete": {
-                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND row_id = ?`, [change.tableName, change.rowid]);
+                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND row_id = ? ORDER BY created_at DESC`, [change.tableName, change.rowid]);
                 if (rowChange === undefined) {
                     console.error(`No previous change was found to row before delete`);
                     return [];   

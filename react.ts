@@ -39,7 +39,7 @@ export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Pro
         let dependencies: string[] | undefined = undefined;
         if (typeof(sql) === 'function') dependencies = options?.dependencies ?? [];
         else {
-            if (options && options.dependencies && options.dependencies.length > 0) dependencies = options.dependencies;
+            if (options && options.dependencies) dependencies = options.dependencies;
             else {
                 sqlExplainQuery(db, sql)
                     .then(deps => dependencies = deps)
