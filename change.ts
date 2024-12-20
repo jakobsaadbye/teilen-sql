@@ -20,6 +20,7 @@ export type CrrColumn = {
 export type OpType = 'insert' | 'update' | 'delete'
 export type Change = {
     id: string
+    row_id: string // only used to identify the row locally in the database, NOT when distributed. The pk field is what is used for that
     type: OpType
     tbl_name: string
     col_id: string | null, // null when type is delete
@@ -425,13 +426,13 @@ export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
     if (changes.length === 0) return;
     const applied_at = new Date().getTime();
 
-    const values = changes.map(c => `('${c.id}', '${c.type}', '${c.tbl_name}', '${c.col_id}', '${c.pk}', '${c.value}', '${c.site_id}', '${c.created_at}', '${applied_at}', '${c.seq}')\n`);
+    const values = changes.map((c, i) => `('${c.id}', '${c.row_id}', '${c.type}', '${c.tbl_name}', '${c.col_id}', '${c.pk}', $${i + 1}, '${c.site_id}', '${c.created_at}', '${applied_at}', '${c.seq}')\n`);
     const sql = `
-        INSERT INTO "crr_changes" (id, type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, seq)
+        INSERT INTO "crr_changes" (id, row_id, type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, seq)
         VALUES ${values};
     `;
 
-    return await db.exec(sql, [], { notify: false });
+    return await db.exec(sql, changes.map(c => c.value), { notify: false });
 }
 
 export const compactChanges = async (db: SqliteDB) => {
@@ -582,7 +583,7 @@ const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, va
     return pkCols.map((colId, i) => [colId, values[i]]);
 }
 
-const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
+export const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
     const pkCols = db.pks[tblName];
     assert(pkCols.length > 0);
     return Object.entries(row).filter(([colId, _]) => pkCols.includes(colId)).map(([_, value]) => value).join('|');

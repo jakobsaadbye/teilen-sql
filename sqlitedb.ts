@@ -1,6 +1,14 @@
-import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlExplainExec } from "./change.ts";
+import { assert } from "jsr:@std/assert@0.217/assert";
+import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
+
+type UpdateHookChange = {
+    updateType: 'delete' | 'insert' | 'update',
+    dbName: string,
+    tableName: string,
+    rowid: bigint
+}
 
 export class SqliteDB {
     #debug = false;
@@ -16,18 +24,16 @@ export class SqliteDB {
         // Broadcast channel to notify dependent queries to re-run
         this.#channelTableChange = new BroadcastChannel("table_change");
 
+        // Broadcast for update_hook()
+        const bcUpdateHook = new BroadcastChannel("update_hook");
+
         // Broadcast any events handled by the worker to any of the functions below waiting for a result
         const bc = new BroadcastChannel("message_bus");
-        this.#mp.addEventListener('message', async (event) => {
-            bc.postMessage(event.data);
-        });
-
-        // Listen for database updates
-        const otherChannel = new BroadcastChannel("message_bus");
-        otherChannel.addEventListener('message', (e) => {
-            if (e.data.type === 'change') {
-                this.onChange(e.data.change);
+        this.#mp.addEventListener('message', (event) => {
+            if (event.data.type === 'change') {
+                bcUpdateHook.postMessage(event.data.change);
             }
+            bc.postMessage(event.data);
         });
 
         // Get or assign a unique site_id
@@ -46,23 +52,12 @@ export class SqliteDB {
                 }
             })
             .catch(e => console.error("Failed to get site_id", e));
-        
+
         // Enable foreign key constraints
         this.exec(`PRAGMA foreign_keys = ON`, []);
 
         // Extract the primary keys of tables to be used in changes
         this.extractPks();
-    }
-
-    onChange(change: {
-        updateType: 'delete' | 'insert' | 'update',
-        dbName: string | null,
-        tableName: string | null,
-        rowid: bigint
-    }) {
-        // NOTE: Unused but kept as it will come in handy when improving the way that new changes are recognized.
-        // this.#channelTableChange.postMessage(change);
-        // console.log(change);
     }
 
     async close(): Promise<Error> {
@@ -75,6 +70,7 @@ export class SqliteDB {
     }
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
+        console.log(sql);
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
@@ -85,32 +81,25 @@ export class SqliteDB {
 
     async execTrackChanges(sql: string, params: any[]) {
         try {
-            let [stmt, err, tableName, opType] = sqlAsSelectStmt(sql);
-            if (err !== null) {
-                return err;
-            }
+            const tblName = sqlExplainExec(sql);
 
-            // @Speed: Getting the state before and after the statement has fired like is done here is a pretty slow way of knowning what changed.
-            //         The sqlite update_hook() can give the info that a row was changed, but not what got changed. The ideal 
-            //         preupdate_hook() https://sqlite.org/c3ref/preupdate_count.html can give what is about to change, but is not part of this wasm build, 
-            //         but that would be the way to make this more efficient.   jsaad 10 Dec. 2024
-            const pms = opType === 'insert' ? [] : params; // Strip any parameters to match the reduced select query
-            const before = await this.select<any[]>(stmt as string, pms);
-            err = await this.exec(sql, params, { notify: false });
-            if (err) return err;
-            const after = await this.select<any[]>(stmt as string, pms);
+            const updateHook = new BroadcastChannel("update_hook");
+            this.exec(sql, params, { notify: false });
+            const change: UpdateHookChange = await new Promise(resolve => {
+                updateHook.addEventListener('message', (event) => {
+                    resolve(event.data);
+                });
+            });
 
-            const changes = diff(this, before, after, tableName as string, opType as OpType);
+            const changeSet = await this.getChangesetFromUpdate(change);
+            await saveFractionalIndexCols(this, changeSet);
 
-            await saveFractionalIndexCols(this, changes);
-
-            err = await saveChanges(this, changes);
-            if (err) return err;
-
+            const err = await saveChanges(this, changeSet);
             await compactChanges(this);
 
-            this.#channelTableChange.postMessage(tableName);
+            this.#channelTableChange.postMessage(tblName);
             this.#channelTableChange.postMessage("crr_changes");
+            return err;
         } catch (e) {
             return e;
         }
@@ -170,6 +159,80 @@ export class SqliteDB {
     async finalizeUpgrades() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
+    }
+
+    private async getChangesetFromUpdate(change: UpdateHookChange): Promise<Change[]> {
+        switch (change.updateType) {
+            case "insert": {
+                const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
+                assert(row !== undefined, `Failed to get just inserted row in table '${change.tableName}' with rowid '${change.rowid}'`);
+
+                const id = crypto.randomUUID();
+                const rowId = row["rowid"];
+                const pk = pkEncodingOfRow(this, change.tableName, row);
+                const created_at = (new Date()).getTime();
+
+                let seq = 0;
+                const changeSet = [];
+                for (const [key, value] of Object.entries(row)) {
+                    if (key === "rowid") continue;
+                    changeSet.push({ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0, seq });
+                    seq += 1;
+                }
+                return changeSet;
+            }
+            case "delete": {
+                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE row_id = ${change.rowid}`, []);
+                assert(rowChange !== undefined, `No previous change was found to row before delete'`);
+
+                const id = crypto.randomUUID();
+                const pk = rowChange.pk;
+                const rowId = rowChange.row_id;
+                const created_at = (new Date()).getTime();
+
+                return [{ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: null, pk, value: null, site_id: this.siteId, created_at, applied_at: 0, seq: 0 }];
+            };
+            case "update": {
+                const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
+                assert(result !== undefined, `No row was found for update`);
+
+                const { rowid, ...row } = result;
+
+                const lastVersionOfRow = await this.reconstructRowFromCurrentChanges(change.tableName, row);
+                assert(row !== undefined, `No version of row exists with the current changes`);
+
+                const id = crypto.randomUUID();
+                const pk = pkEncodingOfRow(this, change.tableName, row);
+                const rowId = rowid;
+                const created_at = (new Date()).getTime();
+
+                let seq = 0;
+                const changeSet = [];
+                for (const [key, value] of Object.entries(row)) {
+                    const lastValue = lastVersionOfRow[key];
+                    if (value !== lastValue) {
+                        changeSet.push({ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0, seq })
+                        seq += 1;
+                    }
+                }
+
+                return changeSet;
+            };
+            default:
+                return [];
+        }
+    }
+
+    private reconstructRowFromCurrentChanges = async (tblName: string, row: any): Promise<any> => {
+        const pk = pkEncodingOfRow(this, tblName, row);
+        const latestChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? ORDER BY created_at DESC`, [tblName, pk]);
+        if (latestChanges.length === 0) return;
+        let constructed = {};
+        for (const key of Object.keys(row)) {
+            const col = latestChanges.find(c => c.col_id === key);
+            constructed[key] = col !== undefined ? col.value : null;
+        }
+        return constructed;
     }
 
     private async extractPks() {
