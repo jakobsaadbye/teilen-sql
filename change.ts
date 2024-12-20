@@ -2,7 +2,10 @@ import { assert } from "jsr:@std/assert@0.217/assert";
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
-// TODO: Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
+// TODO: 
+//  - Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
+//  - Record all the tables that got changed in applyChanges and only then notify a table change
+
 
 export type Client = {
     site_id: string
@@ -42,19 +45,18 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         const values = insert.map(i => i.value);
         const stmt = `
             INSERT INTO "${tblName}" (${cols.join(",")})
-            VALUES (${values.map(v => `'${v}'`).join(",")})
+            VALUES (${cols.map(_ => '?').join(",")})
         `;
-        stmts.push(stmt);
+
+        await db.exec(stmt, values);
     }
 
-    // @Speed - Is it really nesasary to select all changes here? I think
-    //          we can just select from the min. timestamp of the incomming changes?
-    const currentUpdates = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE type = 'update' ORDER BY created_at DESC`, []);
     const updates = groupById(changes.filter(c => c.type === 'update'));
+    const pks = updates.map(update => update[0].pk);
+    const currentUpdates = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE type = 'update' AND pk IN (${sqlPlaceholders(pks)}) ORDER BY created_at DESC`, [...pks]);
     for (const update of updates) {
         const changesToApply: Change[] = [];
         const tblName = update[0].tbl_name;
-        const id = update[0].id;
         const pk = update[0].pk;
 
         // Check if we should resurect a deleted row
@@ -65,7 +67,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
 
         const findPreviousChangeToSameColumn = (colId: string) => {
-            return currentUpdates.find(change => change.id === id && change.col_id === colId);
+            return currentUpdates.find(change => change.pk === pk && change.col_id === colId);
         }
 
         for (const change of update) {
@@ -76,12 +78,14 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
         if (changesToApply.length === 0) continue;
 
+        const values = changesToApply.map(c => c.value);
         const stmt = `
             UPDATE "${tblName}"
-            SET ${changesToApply.map(c => `${c.col_id} = '${c.value}'`)}
+            SET ${changesToApply.map(c => `${c.col_id} = ?`).join(",")}
             WHERE ${pkEqual(db, tblName, pk)}
         `
-        stmts.push(stmt);
+
+        await db.exec(stmt, values);
     }
 
     // NOTE: Deletions to a row is based on the Add-Wins semantics, meaning
@@ -186,7 +190,7 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
             if (items.length === 0 || items.length === 1) return;
 
             const itemPks = items.map(item => pkEncodingOfRow(db, tblName, item));
-            const lastChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk IN ${sqlArray(itemPks)} AND col_id = '${posColId}' ORDER BY created_at DESC`, []);
+            const lastChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk IN (${sqlPlaceholders(itemPks)}) AND col_id = ? ORDER BY created_at DESC`, [...itemPks, posColId]);
 
             const comparePk = (item: any, pkB: string): boolean => {
                 const pkA = pkEncodingOfRow(db, tblName, item);
@@ -390,8 +394,8 @@ const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
     const insertedValues = inserts.map(i => i.value);
     let err = await db.exec(`
         INSERT INTO "${tblName}" (${insertedCols.join(',')})
-        VALUES ${sqlArray(insertedValues)}
-    `, []);
+        VALUES (${insertedCols.map(_ => '?').join(',')})
+    `, insertedValues);
     if (err) console.error(err);
 
     // NOTE: This assumes LWW on the column meaning we just care about the latest value
@@ -414,7 +418,7 @@ const resurrectRow = async (db: SqliteDB, tblName: string, pk: string) => {
 
 const lastSyncWithPeers = async (db: SqliteDB, siteIds: string[]) => {
     if (siteIds.length === 0) return {};
-    const peers = await db.select<{ site_id: string, max_applied_at: number }[]>(`SELECT site_id, MAX(applied_at) as max_applied_at FROM "crr_changes" WHERE site_id IN ${sqlArray(siteIds)} GROUP BY site_id`, []);
+    const peers = await db.select<{ site_id: string, max_applied_at: number }[]>(`SELECT site_id, MAX(applied_at) as max_applied_at FROM "crr_changes" WHERE site_id IN (${sqlPlaceholders(siteIds)}) GROUP BY site_id`, [...siteIds]);
     let group: { [site_id: string]: number } = {};
     for (const p of peers) {
         group[p.site_id] = p.max_applied_at;
@@ -435,54 +439,36 @@ export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
     return await db.exec(sql, changes.map(c => c.value), { notify: false });
 }
 
-export const compactChanges = async (db: SqliteDB) => {
-    const client = await db.first<Client>(`SELECT * FROM "crr_client" WHERE site_id = ?`, [db.siteId]);
-    if (!client) return;
+export const compactChanges = async (db: SqliteDB, changeSet: Change[]) => {
+    if (changeSet.length === 0) return [];
 
-    const nonPushedChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE site_id = ? AND created_at > ?`, [db.siteId, client.last_pushed_at]);
+    const tblName = changeSet[0].tbl_name;
+    const pk = changeSet[0].pk;
+    const created_at = changeSet[0].created_at;
+    const changeType = changeSet[0].type;
 
-    const groupByRow = (changes: Change[]) => {
-        const groups: { tblName: string, colId: string | null, pk: string, changes: Change[] }[] = [];
-        for (const c of changes) {
-            const groupIdx = groups.findIndex(g => g.tblName === c.tbl_name && g.colId === c.col_id && g.pk === c.pk);
-            if (groupIdx === -1) {
-                groups.push({ tblName: c.tbl_name, colId: c.col_id, pk: c.pk, changes: [c] });
-                continue;
+    switch (changeType) {
+        case "insert": return; // Nothing to compact
+        case "update": {
+            // Delete the prior update changes for the updated cells
+            const cols = changeSet.map(change => change.col_id);
+            const err = await db.exec(`DELETE FROM "crr_changes" WHERE type = 'update' AND tbl_name = ? AND pk = ? AND col_id IN (${sqlPlaceholders(cols)}) AND created_at < ?`, [tblName, pk, ...cols, created_at]);
+            if (err) console.error(err);
+            return;
+        }
+        case "delete": {
+            // We delete the entire history of changes to a row if the row has not yet been synced to any peers
+            const client = await db.first<Client>(`SELECT * FROM "crr_client" WHERE site_id = ?`, [db.siteId]);
+            if (!client) return;
+
+            const rowInsert = await db.first<Change>(`SELECT * FROM "crr_changes" WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND site_id = ? AND created_at > ?`, [tblName, pk, db.siteId, client.last_pushed_at]);
+            if (rowInsert !== undefined) {
+                const err = await db.exec(`DELETE FROM "crr_changes" WHERE tbl_name = ? AND pk = ?`, [tblName, pk]);
+                if (err) console.error(err);
+                return;
             }
-            groups[groupIdx].changes.push(c);
-        }
-        return groups;
-    }
-
-    const toDelete = new Set<string>();
-
-    // Updates:
-    //  - The most recent update to a column in a row is preserved, all others are to be removed
-    const updates = nonPushedChanges.filter(c => c.type === 'update');
-    const updatesGrouped = groupByRow(updates);
-    for (const ug of updatesGrouped) {
-        if (ug.changes.length <= 1) continue
-        const outdated = ug.changes.sort((a, b) => b.created_at - a.created_at).splice(1);
-        for (const c of outdated) {
-            toDelete.add(c.id);
         }
     }
-
-    // Inserts / Deletes:
-    //  - A delete to a row r removes all the non-pushed changes to r
-    const deletes = nonPushedChanges.filter(c => c.type === 'delete');
-    for (const del of deletes) {
-        let affected = nonPushedChanges.filter(c => c.tbl_name === del.tbl_name && c.pk === del.pk);
-        const keepDelete = affected.findIndex(c => c.type === 'insert') === -1;
-        if (keepDelete) {
-            affected = affected.filter(c => c.type !== 'delete');
-        }
-        for (const a of affected) {
-            toDelete.add(a.id);
-        }
-    }
-
-    await db.exec(`DELETE FROM "crr_changes" WHERE id IN (${[...toDelete].map(id => `'${id}'`).join(',')})`, [], { notify: false });
 }
 
 const groupById = (changes: Change[]): Change[][] => {
@@ -493,78 +479,6 @@ const groupById = (changes: Change[]): Change[][] => {
         groups.push(group);
     }
     return groups;
-}
-
-export const diff = (db: SqliteDB, before: any[], after: any[], tblName: string, opType: OpType): Change[] => {
-    switch (opType) {
-        case "insert": {
-            assert(before.length <= after.length);
-
-            // TODO: This is probably THEE dumbeest way to check for changes in an insert. Only @Temporary @Cleanup
-            const changes: Change[] = [];
-            const keys = after.length > 0 ? Object.keys(after[0]) : [];
-            const created_at = (new Date()).getTime();
-
-            if (after.length > before.length) {
-                for (let i = before.length; i < after.length; i++) { // Only take the ones that got added in the reverse
-                    const pk = pkEncodingOfRow(db, tblName, after[i]);
-                    let seq = 0;
-                    const id = crypto.randomUUID();
-                    for (const key of keys) {
-                        const valAfter = after[i][key];
-                        changes.push({ id, type: opType, tbl_name: tblName, col_id: key, pk, value: valAfter, site_id: db.siteId, created_at, applied_at: 0, seq });
-                        seq += 1;
-                    }
-                }
-            } else if (after.length === before.length) { // Must have been because of an ON CONFLICT UPDATE
-                return diffUpdate(db, before, after, tblName, 'update');
-            }
-
-            return changes;
-        }
-        case "delete": {
-            if (before.length === after.length) {
-                return [];
-            }
-            assert(before.length > after.length);
-
-            const changes: Change[] = [];
-            const created_at = (new Date()).getTime();
-            for (let i = before.length - 1; i >= after.length; i--) {
-                const pk = pkEncodingOfRow(db, tblName, before[i]);
-                let seq = 0;
-                const id = crypto.randomUUID();
-                changes.push({ id, type: opType, tbl_name: tblName, col_id: null, pk, value: null, site_id: db.siteId, created_at, applied_at: 0, seq });
-                seq += 1;
-            }
-
-            return changes;
-        }
-        case "update": {
-            return diffUpdate(db, before, after, tblName, opType);
-        }
-    }
-}
-
-const diffUpdate = (db: SqliteDB, before: any[], after: any[], tblName: string, opType: OpType): Change[] => {
-    const changes: Change[] = [];
-    const keys = before.length > 0 ? Object.keys(before[0]) : [];
-    const created_at = (new Date()).getTime();
-    for (let i = 0; i < before.length; i++) {
-        let seq = 0;
-        const id = crypto.randomUUID();
-        for (const key of keys) {
-            const valBefore = before[i][key];
-            const valAfter = after[i][key];
-            if (valBefore !== valAfter) {
-                const pk = pkEncodingOfRow(db, tblName, before[i]);
-                changes.push({ id, type: opType, tbl_name: tblName, col_id: key, pk, value: valAfter, site_id: db.siteId, created_at, applied_at: 0, seq });
-                seq += 1;
-            }
-        }
-    }
-
-    return changes;
 }
 
 const pkEqual = (db: SqliteDB, tblName: string, pk: string) => {
@@ -622,11 +536,11 @@ export const sqlAsSelectStmt = (sql: string) => {
     }
 }
 
-export const sqlArray = (a: any[]) => {
-    return `(${a.map(v => `'${v}'`).join(',')})`;
+export const sqlPlaceholders = (a: any[]) => {
+    return `${a.map(_ => `?`).join(',')}`;
 }
 
-export const sqlExplainExec = (sql: string) : string => {
+export const sqlExplainExec = (sql: string): string => {
     const s = sql.trim().split(' ');
     switch (s[0].toLowerCase()) {
         case "insert": {

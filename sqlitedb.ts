@@ -1,5 +1,4 @@
-import { assert } from "jsr:@std/assert@0.217/assert";
-import { compactChanges, sqlAsSelectStmt, CrrColumn, diff, OpType, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -70,7 +69,6 @@ export class SqliteDB {
     }
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
-        console.log(sql);
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
@@ -95,7 +93,7 @@ export class SqliteDB {
             await saveFractionalIndexCols(this, changeSet);
 
             const err = await saveChanges(this, changeSet);
-            await compactChanges(this);
+            await compactChanges(this, changeSet);
 
             this.#channelTableChange.postMessage(tblName);
             this.#channelTableChange.postMessage("crr_changes");
@@ -165,7 +163,10 @@ export class SqliteDB {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
-                assert(row !== undefined, `Failed to get just inserted row in table '${change.tableName}' with rowid '${change.rowid}'`);
+                if (row === undefined) {
+                    console.error(`Failed to get just inserted row in table '${change.tableName}' with rowid '${change.rowid}'`);
+                    return [];
+                }
 
                 const id = crypto.randomUUID();
                 const rowId = row["rowid"];
@@ -182,8 +183,11 @@ export class SqliteDB {
                 return changeSet;
             }
             case "delete": {
-                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE row_id = ${change.rowid}`, []);
-                assert(rowChange !== undefined, `No previous change was found to row before delete'`);
+                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND row_id = ?`, [change.tableName, change.rowid]);
+                if (rowChange === undefined) {
+                    console.error(`No previous change was found to row before delete`);
+                    return [];   
+                }
 
                 const id = crypto.randomUUID();
                 const pk = rowChange.pk;
@@ -194,12 +198,18 @@ export class SqliteDB {
             };
             case "update": {
                 const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
-                assert(result !== undefined, `No row was found for update`);
+                if (result === undefined) {
+                    console.error(`No row was found for update`);
+                    return [];
+                };
 
                 const { rowid, ...row } = result;
 
                 const lastVersionOfRow = await this.reconstructRowFromCurrentChanges(change.tableName, row);
-                assert(row !== undefined, `No version of row exists with the current changes`);
+                if (row === undefined) {
+                    console.error(`No version of row exists with the current changes`);
+                    return [];
+                };
 
                 const id = crypto.randomUUID();
                 const pk = pkEncodingOfRow(this, change.tableName, row);
