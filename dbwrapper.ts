@@ -1,5 +1,6 @@
 import { Database } from "jsr:@db/sqlite@0.12";
 import { CrrColumn } from "./change.ts";
+import { ForeignKey } from "./sqlitedb.ts";
 
 export class SqliteDBWrapper {
     #db: Database
@@ -44,9 +45,14 @@ export class SqliteDBWrapper {
 
     async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
-        const values = columns.map(c => `('${tblName}', '${c.name}', 'lww', '')`).join(',');
+        const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
+        const values = columns.map(c => {
+            const fk = this.fkOrNull(c, fks);
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
+            else    return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
+        }).join(',');
         const err = await this.exec(`
-            INSERT INTO "crr_columns"
+            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
             VALUES ${values}
             ON CONFLICT DO NOTHING
         `, []);
@@ -65,6 +71,12 @@ export class SqliteDBWrapper {
     private async finalizeUpgrades() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
+    }
+
+    private fkOrNull(col: any, fks: ForeignKey[]) : ForeignKey | null {
+        const fk = fks.find(fk => fk.from === col.name);
+        if (fk === undefined) return null;
+        return fk
     }
 
     private async extractPks() {

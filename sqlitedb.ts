@@ -1,4 +1,4 @@
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -7,6 +7,13 @@ type UpdateHookChange = {
     dbName: string,
     tableName: string,
     rowid: bigint
+}
+
+export type ForeignKey = {
+    table: string
+    from: string
+    to: string
+    on_delete: 'CASCADE' | 'RESTRICT'
 }
 
 export class SqliteDB {
@@ -74,7 +81,7 @@ export class SqliteDB {
             const tblName = sqlExplainExec(sql);
             this.#channelTableChange.postMessage(tblName);
         };
-        return data.error as Error;
+        return data.error as Error | undefined;
     }
 
     async execTrackChanges(sql: string, params: any[]) {
@@ -136,9 +143,14 @@ export class SqliteDB {
 
     async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
-        const values = columns.map(c => `('${tblName}', '${c.name}', 'lww', 'null')`).join(',');
+        const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
+        const values = columns.map(c => {
+            const fk = this.fkOrNull(c, fks);
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
+            else    return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
+        }).join(',');
         const err = await this.exec(`
-            INSERT INTO "crr_columns"
+            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
             VALUES ${values}
             ON CONFLICT DO NOTHING
         `, []);
@@ -157,6 +169,12 @@ export class SqliteDB {
     async finalizeUpgrades() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
+    }
+
+    private fkOrNull(col: any, fks: ForeignKey[]) : ForeignKey | null {
+        const fk = fks.find(fk => fk.from === col.name);
+        if (fk === undefined) return null;
+        return fk
     }
 
     private async getChangesetFromUpdate(change: UpdateHookChange): Promise<Change[]> {
@@ -204,15 +222,15 @@ export class SqliteDB {
                 };
 
                 const { rowid, ...row } = result;
+                const pk = pkEncodingOfRow(this, change.tableName, row);
 
-                const lastVersionOfRow = await this.reconstructRowFromCurrentChanges(change.tableName, row);
+                const lastVersionOfRow = await reconstructRowFromHistory(this, change.tableName, pk);
                 if (row === undefined) {
                     console.error(`No version of row exists with the current changes`);
                     return [];
                 };
 
                 const id = crypto.randomUUID();
-                const pk = pkEncodingOfRow(this, change.tableName, row);
                 const rowId = rowid;
                 const created_at = (new Date()).getTime();
 
@@ -231,18 +249,6 @@ export class SqliteDB {
             default:
                 return [];
         }
-    }
-
-    private reconstructRowFromCurrentChanges = async (tblName: string, row: any): Promise<any> => {
-        const pk = pkEncodingOfRow(this, tblName, row);
-        const latestChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? ORDER BY created_at DESC`, [tblName, pk]);
-        if (latestChanges.length === 0) return;
-        let constructed = {};
-        for (const key of Object.keys(row)) {
-            const col = latestChanges.find(c => c.col_id === key);
-            constructed[key] = col !== undefined ? col.value : null;
-        }
-        return constructed;
     }
 
     private async extractPks() {
