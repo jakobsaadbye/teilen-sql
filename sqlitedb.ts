@@ -43,13 +43,13 @@ export class SqliteDB {
         });
 
         // Get or assign a unique site_id
-        this.select(`SELECT * FROM "crr_client"`, [])
+        this.select(`SELECT * FROM "crr_clients" WHERE is_me = true`, [])
             .then(rows => {
                 if (rows.length > 0) {
                     this.siteId = rows[0].site_id;
                 } else {
                     const id = crypto.randomUUID();
-                    this.exec(`INSERT INTO "crr_client" (site_id) VALUES ($1)`, [id])
+                    this.exec(`INSERT INTO "crr_clients" (site_id, is_me) VALUES (?, true)`, [id])
                         .then(() => {
                             console.log("Assigned a new site_id");
                             this.siteId = id;
@@ -133,7 +133,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_client", "crr_columns", "crr_frac_index"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_frac_index"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -186,17 +186,14 @@ export class SqliteDB {
                     return [];
                 }
 
-                const id = crypto.randomUUID();
                 const rowId = row["rowid"];
                 const pk = pkEncodingOfRow(this, change.tableName, row);
                 const created_at = (new Date()).getTime();
 
-                let seq = 0;
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     if (key === "rowid") continue;
-                    changeSet.push({ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0, seq });
-                    seq += 1;
+                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0});
                 }
                 return changeSet;
             }
@@ -207,12 +204,11 @@ export class SqliteDB {
                     return [];   
                 }
 
-                const id = crypto.randomUUID();
                 const pk = rowChange.pk;
                 const rowId = rowChange.row_id;
                 const created_at = (new Date()).getTime();
 
-                return [{ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: null, pk, value: null, site_id: this.siteId, created_at, applied_at: 0, seq: 0 }];
+                return [{ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: null, pk, value: null, site_id: this.siteId, created_at, applied_at: 0 }];
             };
             case "update": {
                 const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -230,17 +226,14 @@ export class SqliteDB {
                     return [];
                 };
 
-                const id = crypto.randomUUID();
                 const rowId = rowid;
                 const created_at = (new Date()).getTime();
 
-                let seq = 0;
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     const lastValue = lastVersionOfRow[key];
                     if (value !== lastValue) {
-                        changeSet.push({ id, row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0, seq })
-                        seq += 1;
+                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0 })
                     }
                 }
 

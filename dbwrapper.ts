@@ -35,7 +35,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_client", "crr_columns"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
