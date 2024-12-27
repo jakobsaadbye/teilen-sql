@@ -1,6 +1,7 @@
 import { Database } from "jsr:@db/sqlite@0.12";
 import { CrrColumn } from "./change.ts";
 import { ForeignKey } from "./sqlitedb.ts";
+import { ms } from "./ms.ts";
 
 export class SqliteDBWrapper {
     #db: Database
@@ -43,19 +44,20 @@ export class SqliteDBWrapper {
         }
     }
 
-    async upgradeTableToCrr(tblName: string) {
+    async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
+        const deleteWinsAfterMs = ms(deleteWinsAfter);
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
         const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
-            else    return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${deleteWinsAfterMs}', null)`;
+            else return `('${tblName}', '${c.name}', 'lww', null, null, '${deleteWinsAfterMs}', null)`;
         }).join(',');
         const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
-            VALUES ${values}
-            ON CONFLICT DO NOTHING
-        `, []);
+                INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, delete_wins_after, parent_col_id)
+                VALUES ${values}
+                ON CONFLICT DO NOTHING
+            `, []);
         if (err) return console.error(err);
     }
 
@@ -73,7 +75,7 @@ export class SqliteDBWrapper {
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
     }
 
-    private fkOrNull(col: any, fks: ForeignKey[]) : ForeignKey | null {
+    private fkOrNull(col: any, fks: ForeignKey[]): ForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);
         if (fk === undefined) return null;
         return fk

@@ -1,0 +1,4 @@
+Deletions:
+    - Deletion should also check any referencing rows before completing the deletion!
+    - resurrectRows is not accounting for actually deleted rows? Should do the opposite of 
+      what the deletion phase does!

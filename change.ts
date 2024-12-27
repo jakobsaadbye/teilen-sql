@@ -20,6 +20,7 @@ export type CrrColumn = {
     type: 'lww' | 'fractional_index'
     fk: string | null // format is 'table|col_id'
     fk_on_delete: 'CASCADE' | 'RESTRICT'
+    delete_wins_after: bigint
     parent_col_id: string // set if fractional_index otherwise empty string
 };
 
@@ -114,26 +115,85 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     }
 
     {
-        // @Incomplete -
-        //      - !!!Peer deletions doesn't work right now!!!
+        // @Incomplete
         //      - Check deletions more robustely. They should only go through. If no prior delete has been made to that row, OR any foreign rows that references it!
         //
-        // NOTE: Deletions to a row is based on the Add-Wins semantics, meaning
-        //       any updates to a row results in the row being kept alive.
-        //       Deletes only happen if no changes was made to the row since the
-        //       peers last synced changes.
+        // NOTE: Deletions are based on a hybrid between Add-Wins and Remove-Wins set
+        // based on a user defined 'delete_wins_after' field. If no 'new' updates have been
+        // made to the row or any referencing rows since the deletion - 'delete_wins_after', then the row
+        // gets deleted.
         const deletes = changes.filter(c => c.type === 'delete');
         const rowsToDelete: { [tblName: string]: string[] } = {};
-        const siteIds = deletes.map(c => c.site_id);
-        const peers = await db.select<Client[]>(`SELECT * FROM "crr_clients" WHERE site_id IN (${sqlPlaceholders(siteIds)})`, [...siteIds]);
         for (const del of deletes) {
-            const peer = peers.find(peer => peer.site_id === del.site_id);
-            const lastSync = peer === undefined ? 0 : peer.last_pulled_at;
 
-            const changesSinceDelete = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? AND applied_at > ?`, [del.tbl_name, del.pk, lastSync]);
-            if (changesSinceDelete.length === 0) {
+            const dwa = db.crrColumns[del.tbl_name][0].delete_wins_after;
+            const newChangesToThisRow = await db.select<Change[]>(`
+                SELECT * FROM "crr_changes" 
+                WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND pk = ? AND applied_at >= ? - ? 
+                ORDER BY created_at DESC
+            `, [del.site_id, del.tbl_name, del.pk, del.created_at, dwa]);
+
+            
+            let newChildChanges: Change[] = [];
+            if (newChangesToThisRow.length === 0) {
+                const root = { tblName: del.tbl_name, pk: del.pk };
+                const queue = [root];
+                while (queue.length > 0) {
+                    const parent = queue.pop() as { tblName: string, pk: string };
+                    const childRelations = childFkRelations(db, parent.tblName, parent.pk);
+    
+                    for (const rel of childRelations) {
+                        const dwa = db.crrColumns[rel.childTblName][0].delete_wins_after;
+        
+                        const pkRows = await db.select<{ pk: string }[]>(`
+                            SELECT DISTINCT pk FROM "crr_changes" 
+                            WHERE type != 'delete' AND tbl_name = ? AND col_id = ? AND value = ?
+                        `, [rel.childTblName, rel.childColId, parent.pk]);
+                        if (pkRows.length === 0) continue;
+        
+                        const childPks = pkRows.map(row => row.pk);
+        
+                        const newChanges = await db.select<Change[]>(`
+                            SELECT * FROM "crr_changes" 
+                            WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND applied_at >= ? - ? AND pk IN (${sqlPlaceholders(childPks)}) 
+                            ORDER BY created_at DESC
+                        `, [del.site_id, rel.childTblName, del.created_at, dwa, ...childPks]);
+                        
+                        if (newChanges.length > 0) {
+                            console.log(`Stopped a delete from occuring because a new change was found to child table '${rel.childTblName}'`);
+                        }
+
+                        if (newChanges.length > 0) {
+                            // We found a child change. Don't delete the row!
+                            newChildChanges = newChanges;
+                            break;
+                        }
+        
+    
+                        for (const childPk of childPks) {
+                            const grandChildRelations = childFkRelations(db, rel.childTblName, childPk);
+                            queue.push(...grandChildRelations);
+                        }
+                    }
+                }
+            }
+
+            const allNewChanges = [...newChangesToThisRow, ...newChildChanges];
+            if (allNewChanges.length === 0) {
                 if (rowsToDelete[del.tbl_name] === undefined) rowsToDelete[del.tbl_name] = [del.pk]
                 else rowsToDelete[del.tbl_name].push(del.pk);
+
+                // Mark any outstanding changes as 'old' since they were overwritten by the delete. This makes sure we don't
+                // sync old changes. In any case, old changes are also ignored when inserting in resurrectDeletedRows()
+                await db.exec(`UPDATE "crr_changes" SET applied_at = -1 WHERE tbl_name = ? AND pk = ?`, [del.tbl_name, del.pk]);
+            } else {
+                // We make a 'counter' change that acts as a 'new' change
+                // that can get pushed to other clients so that they will reflect that the 'delete' didn't happen.
+                // Its simply a re-play of the newest change so it won't have any effect.
+                // NOTE: Shouldn't this be 're-playing' all the new changes???
+                const newestChange = allNewChanges[0];
+                await saveChanges(db, [newestChange]);
+                console.log(`Produced a counter change`, newestChange);
             }
         }
         for (const [tblName, pks] of Object.entries(rowsToDelete)) {
@@ -154,12 +214,14 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     // so that all rows are known about
     await fixAnyFractionalIndexCollisions(db, getChangeSets(changes));
 
-    // Update the last_pulled_at for the peers we've seen
+    await updateLastPulledAtFromPeers(db, changes);
+}
+
+const updateLastPulledAtFromPeers = async (db: SqliteDB, changes: Change[]) => {
     const changesPerSite = Object.groupBy(changes, (change) => change.site_id);
     for (const [siteId, changes] of Object.entries(changesPerSite)) {
         changes!.sort((a, b) => b.applied_at - a.applied_at);
         const maxAppliedAt = changes![changes!.length - 1].applied_at;
-        const lastPulledAt = maxAppliedAt;
 
         const err = await db.exec(`
             INSERT INTO "crr_clients" (site_id, last_pulled_at, is_me)
@@ -167,10 +229,29 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             ON CONFLICT DO UPDATE SET
                 last_pulled_at = EXCLUDED.last_pulled_at,
                 is_me          = false
-        `, [siteId, lastPulledAt]);
+        `, [siteId, maxAppliedAt]);
         if (err) return err;
     }
 }
+
+const childFkRelations = (db: SqliteDB, parentTblName: string, parentPk: string) => {
+    const relations = [];
+    for (const [tblName, cols] of Object.entries(db.crrColumns)) {
+        const fkCols = cols.filter(col => col.fk !== null && col.fk_on_delete === 'CASCADE' && col.fk.split("|")[0] === parentTblName);
+        if (fkCols.length > 0) {
+            for (const col of fkCols) {
+                relations.push({
+                    childTblName: tblName,
+                    childColId: col.col_id,
+                    tblName: parentTblName,
+                    colId: col.fk!.split("|")[1],
+                    pk: parentPk
+                });
+            }
+        }
+    }
+    return relations;
+};
 
 const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
     assert(changeSet.length > 0 && changeSet[0].type !== 'delete');
@@ -227,25 +308,6 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
         return fkRelations;
     }
 
-    const childFkRelations = (parentTblName: string, parentPk: string) => {
-        const relations = [];
-        for (const [tblName, cols] of Object.entries(db.crrColumns)) {
-            const fkCols = cols.filter(col => col.fk !== null && col.fk_on_delete === 'CASCADE' && col.fk.split("|")[0] === parentTblName);
-            if (fkCols.length > 0) {
-                for (const col of fkCols) {
-                    relations.push({
-                        childTblName: tblName,
-                        childColId: col.col_id,
-                        tblName: parentTblName,
-                        colId: col.fk!.split("|")[1],
-                        pk: parentPk
-                    });
-                }
-            }
-        }
-        return relations;
-    };
-
     const parentRelations = await parentFkRelations(tblName, pk, true);
 
     // Progressively, move up the tree of possibly deleted parents to find
@@ -261,7 +323,7 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
     // Synql (https://inria.hal.science/hal-03999168/document), let the ON DELETE decide what happens.
     // ON DELETE RESTRICT, would equate to what we are doing here, resurrecting the tree on an update or insert,
     // while CASCADE would let the deletion win.
-    let root: {tblName: string, pk: string} = { tblName, pk };
+    let root: { tblName: string, pk: string } = { tblName, pk };
     const queue = [parentRelations];
     while (queue.length !== 0) {
         const relations = queue.pop() as FkRelations;
@@ -270,7 +332,7 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
             const parentRow = await db.first<any | undefined>(`SELECT * FROM "${parent.tblName}" WHERE ${pkEqual(db, parent.tblName, parent.pk)}`, []);
             if (parentRow === undefined) {
                 // Parent is deleted. Consider this the root
-                root = {tblName: fkRel.tblName, pk: fkRel.pk};
+                root = { tblName: fkRel.tblName, pk: fkRel.pk };
 
                 const parentRels = await parentFkRelations(parent.tblName, parent.pk);
                 if (Object.keys(parentRels).length === 0) break; // Parent doesn't have any fk relations
@@ -283,7 +345,7 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
     // Begin inserting the child rows for each parent from top to bottom in the tree.
     const parentQueue = [root];
     while (parentQueue.length !== 0) {
-        const parent = parentQueue.pop() as {tblName: string, pk: string};
+        const parent = parentQueue.pop() as { tblName: string, pk: string };
 
         // Reconstruct the parent if it is deleted!
         if (changeSet[0].type === 'insert' && tblName === parent.tblName && pk === parent.pk) {
@@ -294,7 +356,7 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
             if (parentRow === undefined) {
                 parentRow = await reconstructRowFromHistory(db, parent.tblName, parent.pk);
                 if (parentRow === undefined || Object.keys(parentRow).length === 0) return console.error(`Failed to reconstruct parent row (${parent.tblName}, ${parent.pk})`);
-    
+
                 const err = await insertRows(db, parent.tblName, [parentRow]);
                 if (err) return console.error(err);
             }
@@ -302,8 +364,9 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
             console.log(`Parent ('${parent.tblName}', ${parentRow["title"]})`);
         }
 
-
-        for (const fkRel of childFkRelations(parent.tblName, parent.pk)) {
+        const childRelations = childFkRelations(db, parent.tblName, parent.pk);
+        console.log(`Child relations: `, childRelations);
+        for (const fkRel of childRelations) {
             // Shouldn't we check if the child row is actually dead? If so, we shouldn't try and resurrect it.
             const childTblName = fkRel.childTblName;
 
@@ -321,7 +384,7 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
             // relations to visit.
             for (let i = 0; i < childRows.length; i++) {
                 const childPk = childPks[i].pk;
-                const grandChildRelations = childFkRelations(childTblName, childPk);
+                const grandChildRelations = childFkRelations(db, childTblName, childPk);
                 parentQueue.push(...grandChildRelations);
             }
         }
@@ -351,7 +414,7 @@ const insertRows = async (db: SqliteDB, tblName: string, rows: any[]) => {
     // Update the rowids of all changes with the inserted rows rowid
     const rowPks = rows.map(row => pkEncodingOfRow(db, tblName, row));
     const condition = rows.map((_, i) => `(${pkEqual(db, tblName, rowPks[i])})`).join(" OR \n");
-    const insertedRows = await db.select<{rowid: bigint}[]>(`SELECT rowid FROM "${tblName}" WHERE ${condition}`, []);
+    const insertedRows = await db.select<{ rowid: bigint }[]>(`SELECT rowid FROM "${tblName}" WHERE ${condition}`, []);
 
     for (const row of insertedRows) {
         const pk = pkEncodingOfRow(db, tblName, row);
@@ -647,9 +710,9 @@ const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: strin
 
 export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
     if (changes.length === 0) return;
-    const applied_at = new Date().getTime();
+    const appliedAt = new Date().getTime();
 
-    const valueSets = changes.map(c => [c.row_id, c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, applied_at]);
+    const valueSets = changes.map(c => [c.row_id, c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt]);
     const values = valueSets.reduce((acc, vals) => [...acc, ...vals], []);
     const sql = `
         INSERT INTO "crr_changes" (row_id, type, tbl_name, col_id, pk, value, site_id, created_at, applied_at)
@@ -675,17 +738,27 @@ export const compactChanges = async (db: SqliteDB, changeSet: Change[]) => {
         case "insert": return; // Nothing to compact
         case "update": return; // Nothing to compact. Update overrides previous update in saveChanges()
         case "delete": {
-            // We delete the entire history of changes to a row if the row has not yet been synced to any peers
+            // We delete the entire history of changes to a row if the row has not yet been synced to any peers.
             // @Incomplete - Also delete all references pointing to the row with an ON DELETE CASCADE 
             const client = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [db.siteId]);
             if (!client) return;
 
-            const rowInsert = await db.first<Change>(`SELECT * FROM "crr_changes" WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND site_id = ? AND created_at > ?`, [tblName, pk, db.siteId, client.last_pushed_at]);
-            if (rowInsert !== undefined) {
+            const unsyncedChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? AND site_id = ? AND created_at > ?`, [tblName, pk, db.siteId, client.last_pushed_at]);
+            if (unsyncedChanges.length === 0) return;
+
+            const containsInsert = unsyncedChanges.find(change => change.type === 'insert');
+            if (containsInsert) {
                 const err = await db.exec(`DELETE FROM "crr_changes" WHERE tbl_name = ? AND pk = ?`, [tblName, pk]);
                 if (err) console.error(err);
                 return;
             }
+
+            // No insert. We mark the updates as 'old' by setting the 'applied_at' field to a negative number,
+            // so that they won't appear as 'new' updates. We don't delete them, as we might have to recreate the row
+            // at a later point.
+            const err = await db.exec(`UPDATE "crr_changes" SET applied_at = -1, created_at = -1 WHERE type = 'update' AND tbl_name = ? AND pk = ? AND site_id = ? AND created_at > ?`, [tblName, pk, db.siteId, client.last_pushed_at]);
+            if (err) console.error(err);
+            return;
         }
     }
 }

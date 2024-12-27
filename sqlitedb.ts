@@ -1,3 +1,4 @@
+import { ms } from "./ms.ts"
 import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory } from "./change.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
@@ -133,7 +134,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_frac_index"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -141,16 +142,17 @@ export class SqliteDB {
         }
     }
 
-    async upgradeTableToCrr(tblName: string) {
+    async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
+        const deleteWinsAfterMs = ms(deleteWinsAfter);
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
         const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
-            else    return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${deleteWinsAfterMs}', null)`;
+            else return `('${tblName}', '${c.name}', 'lww', null, null, '${deleteWinsAfterMs}', null)`;
         }).join(',');
         const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
+            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, delete_wins_after, parent_col_id)
             VALUES ${values}
             ON CONFLICT DO NOTHING
         `, []);
@@ -171,7 +173,7 @@ export class SqliteDB {
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
     }
 
-    private fkOrNull(col: any, fks: ForeignKey[]) : ForeignKey | null {
+    private fkOrNull(col: any, fks: ForeignKey[]): ForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);
         if (fk === undefined) return null;
         return fk
@@ -193,7 +195,7 @@ export class SqliteDB {
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     if (key === "rowid") continue;
-                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0});
+                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0 });
                 }
                 return changeSet;
             }
@@ -201,7 +203,7 @@ export class SqliteDB {
                 const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND row_id = ? ORDER BY created_at DESC`, [change.tableName, change.rowid]);
                 if (rowChange === undefined) {
                     console.error(`No previous change was found to row before delete`);
-                    return [];   
+                    return [];
                 }
 
                 const pk = rowChange.pk;
