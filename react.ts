@@ -15,6 +15,12 @@ export const useSyncer = (endpoint: string): Syncer => {
     return new Syncer(db, endpoint);
 }
 
+// A QueryFunc is just any function that accepts the db as the first argument and returns data. 
+// All the values in the 'params' list are passed to the function.
+// Mostly used if you want to delegate out complex queries into a function that live elsewhere. 
+// NOTE: You need to specify the list of table dependencies for the function to re-run in the query options
+type QueryFunc<T> = (db: SqliteDB, ...params: any) => Promise<T>;
+
 type UseQueryOptions = {
     fireIf?: boolean        // A condition to be true before executing
     once?: boolean          // If the query only should run once when the component mounts
@@ -22,7 +28,7 @@ type UseQueryOptions = {
     dependencies?: string[] // List of table names that if updated re-runs the query. Only needed to be specified if passed a function that can run arbitrary sql stmts. Otherwise the affected table is infered from the sql query
 }
 
-export const useQuery = <T>(sql: string | ((db: SqliteDB, ...params: any) => Promise<T>), params: any[], options?: UseQueryOptions) : {data: T, error: any, isLoading: boolean} => {
+export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?: UseQueryOptions) : {data: T, error: any, isLoading: boolean} => {
     const db = useContext(SqliteContext);
     if (db === null) {
         throw new Error(`Failed to retreive db from context. Make sure the components useQuery is used in, is inside of a SqliteContext.Provider`)

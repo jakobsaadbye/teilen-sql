@@ -310,14 +310,13 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
     // that have an ON DELETE CASCADE relation, as we don't capture those
     // in the change history as deletes, so we need to figure out all the re-inserts
     // that we need to do, in-order to invert the cascading delete operation.
+    // When cascading down the tree to re-insert deleted children, we keep the hybrid
+    // add/remove-wins semantics to determine if the child should be resurrected, based on when the children were modified.
     //
-    // NOTE: This is a very strict form of "Add-Wins" where a single update
-    // to a referenced table, reconstructs all the deletions that were cascaded. We might
-    // add an option to let the deletion win over inserts/updates after a given time-frame ()
-    // otherwise it makes it hard to delete very referenced rows. We might also do as the authors of 
-    // Synql (https://inria.hal.science/hal-03999168/document), let the ON DELETE decide what happens.
-    // ON DELETE RESTRICT, would equate to what we are doing here, resurrecting the tree on an update or insert,
-    // while CASCADE would let the deletion win.
+    // NOTE: On top of the timing based add/remove wins set, we might also do something like 
+    // Synql (https://inria.hal.science/hal-03999168/document), let the ON DELETE on a foreign-key decide what happens.
+    // ON DELETE RESTRICT, would resurrect the entire graph of relations (although, i think sqlite would already block the delete comming through so maybe no need to do something at all), 
+    // ON DELETE CASCADE, would be to let remove win always.
     const timeIncChange = changeSet[0].created_at;
 
     let root: { tblName: string, pk: string } = { tblName, pk };
@@ -420,9 +419,11 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
                 childPks = childPks.filter(pk => !childPksLosingToParent.includes(pk));
 
                 // Check if the children themselves have a deletion on them that is winning over the set of its own changes
+                // NOTE: Would be nice to have a flag or something to know if the child should be resurrected or not instead of doing all this ...
+                // Although, not sure if that is possible given the timing semantics.
                 const priorChildChanges = await db.select<Change[]>(`
                     SELECT * FROM "crr_changes" 
-                    WHERE type = 'delete' AND tbl_name = ? AND pk IN (${sqlPlaceholders(childPks)})
+                    WHERE tbl_name = ? AND pk IN (${sqlPlaceholders(childPks)})
                     ORDER BY created_at DESC
                 `, [fkRel.childTblName, ...childPks]);
 
@@ -619,7 +620,7 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
 
                     // Collision on a position!
                     // Resolve by last-writer-wins. The last writer, gets to be below the other. 
-                    // NOTE: Maybe it should be an option when upgrading to a fractional index, to choose weather the last writer gets below or above
+                    // NOTE: Maybe it should be an option when upgrading to a fractional index, to choose weather the last writer gets below or above?
                     const sorted = group!.toSorted(([, , changeA], [, , changeB]) => isLastWriter(changeA, changeB) ? +1 : -1);
 
                     // First item in the sorted collisions will just stay put as the anchor point for the rest of the collisions to go after.
