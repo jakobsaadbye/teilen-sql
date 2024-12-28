@@ -82,6 +82,9 @@ export class SqliteDB {
             const tblName = sqlExplainExec(sql);
             this.#channelTableChange.postMessage(tblName);
         };
+        if (data.error) {
+            console.error(`Failed executing`, sql, params);
+        }
         return data.error as Error | undefined;
     }
 

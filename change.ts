@@ -45,7 +45,8 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
 
             // NOTE(*important*): Needs to be called before the insert stmt happens, as the parent row
             // might have been deleted
-            await resurrectDeletedRows(db, insert);
+            const proceed = await resurrectDeletedRows(db, insert);
+            if (!proceed) continue;
 
             const tblName = insert[0].tbl_name;
             const cols = insert.map(i => i.col_id);
@@ -57,7 +58,9 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             `;
 
             let err = await db.exec(stmt, values);
-            if (err) return err;
+            if (err) { 
+                return err; 
+            }
 
             // :ModifyRowId
             // We need to modify the rowid of the incomming insert change to match the local rowid that the row got when being inserted.
@@ -68,10 +71,10 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             if (row === undefined) return Error(`Failed to get just inserted row`);
 
             err = await db.exec(`UPDATE "crr_changes" SET row_id = ? WHERE tbl_name = ? AND pk = ?`, [row.rowid, tblName, pk]);
-            if (err) return err;
+            if (err) { console.error(err); return err; }
         }
         const err = await saveChanges(db, inserts);
-        if (err) return err;
+        if (err) { console.error(err); return err; }
     }
 
     {
@@ -86,7 +89,8 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
 
             // NOTE(*important*): Needs to be called before the update stmt happens, as the row
             // might have been deleted
-            await resurrectDeletedRows(db, update);
+            const proceed = await resurrectDeletedRows(db, update);
+            if (!proceed) continue;
 
             const findPreviousChangeToSameColumn = (colId: string) => {
                 return currentUpdates.find(change => change.pk === pk && change.col_id === colId);
@@ -107,17 +111,14 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 WHERE ${pkEqual(db, tblName, pk)}
             `;
             const err = await db.exec(stmt, values);
-            if (err) return err;
+            if (err) { console.error(err); return err; }
         }
 
         const err = await saveChanges(db, changesToApply);
-        if (err) return err;
+        if (err) { console.error(err); return err; }
     }
 
     {
-        // @Incomplete
-        //      - Check deletions more robustely. They should only go through. If no prior delete has been made to that row, OR any foreign rows that references it!
-        //
         // NOTE: Deletions are based on a hybrid between Add-Wins and Remove-Wins set
         // based on a user defined 'delete_wins_after' field. If no 'new' updates have been
         // made to the row or any referencing rows since the deletion - 'delete_wins_after', then the row
@@ -133,7 +134,6 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 ORDER BY created_at DESC
             `, [del.site_id, del.tbl_name, del.pk, del.created_at, dwa]);
 
-            
             let newChildChanges: Change[] = [];
             if (newChangesToThisRow.length === 0) {
                 const root = { tblName: del.tbl_name, pk: del.pk };
@@ -141,35 +141,30 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 while (queue.length > 0) {
                     const parent = queue.pop() as { tblName: string, pk: string };
                     const childRelations = childFkRelations(db, parent.tblName, parent.pk);
-    
+
                     for (const rel of childRelations) {
-                        const dwa = db.crrColumns[rel.childTblName][0].delete_wins_after;
-        
                         const pkRows = await db.select<{ pk: string }[]>(`
                             SELECT DISTINCT pk FROM "crr_changes" 
                             WHERE type != 'delete' AND tbl_name = ? AND col_id = ? AND value = ?
                         `, [rel.childTblName, rel.childColId, parent.pk]);
                         if (pkRows.length === 0) continue;
-        
+
                         const childPks = pkRows.map(row => row.pk);
-        
+
+                        const dwa = db.crrColumns[rel.childTblName][0].delete_wins_after;
                         const newChanges = await db.select<Change[]>(`
                             SELECT * FROM "crr_changes" 
                             WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND applied_at >= ? - ? AND pk IN (${sqlPlaceholders(childPks)}) 
                             ORDER BY created_at DESC
                         `, [del.site_id, rel.childTblName, del.created_at, dwa, ...childPks]);
-                        
-                        if (newChanges.length > 0) {
-                            console.log(`Stopped a delete from occuring because a new change was found to child table '${rel.childTblName}'`);
-                        }
 
                         if (newChanges.length > 0) {
                             // We found a child change. Don't delete the row!
+                            console.log(`Stopped a delete from occuring because a new change was found to child table '${rel.childTblName}'`);
                             newChildChanges = newChanges;
                             break;
                         }
-        
-    
+
                         for (const childPk of childPks) {
                             const grandChildRelations = childFkRelations(db, rel.childTblName, childPk);
                             queue.push(...grandChildRelations);
@@ -203,10 +198,10 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 WHERE ${condition}
             `;
             const err = await db.exec(stmt, []);
-            if (err) return err;
+            if (err) { console.error(err); return err; }
         }
         const err = await saveChanges(db, deletes);
-        if (err) return err;
+        if (err) { console.error(err); return err; }
     }
 
     // Patch any fractional index columns that might have collided. 
@@ -318,31 +313,46 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
     //
     // NOTE: This is a very strict form of "Add-Wins" where a single update
     // to a referenced table, reconstructs all the deletions that were cascaded. We might
-    // add an option to let the deletion win over inserts/updates after a given time-frame,
+    // add an option to let the deletion win over inserts/updates after a given time-frame ()
     // otherwise it makes it hard to delete very referenced rows. We might also do as the authors of 
     // Synql (https://inria.hal.science/hal-03999168/document), let the ON DELETE decide what happens.
     // ON DELETE RESTRICT, would equate to what we are doing here, resurrecting the tree on an update or insert,
     // while CASCADE would let the deletion win.
+    const timeIncChange = changeSet[0].created_at;
+
     let root: { tblName: string, pk: string } = { tblName, pk };
     const queue = [parentRelations];
     while (queue.length !== 0) {
         const relations = queue.pop() as FkRelations;
         for (const [_, fkRel] of Object.entries(relations)) {
             const parent = fkRel;
-            const parentRow = await db.first<any | undefined>(`SELECT * FROM "${parent.tblName}" WHERE ${pkEqual(db, parent.tblName, parent.pk)}`, []);
+
+            const parentRow = await db.first<any>(`SELECT * FROM "${parent.tblName}" WHERE ${pkEqual(db, parent.tblName, parent.pk)}`, []);
             if (parentRow === undefined) {
-                // Parent is deleted. Consider this the root
-                root = { tblName: fkRel.tblName, pk: fkRel.pk };
+                const dwa = db.crrColumns[parent.tblName][0].delete_wins_after;
+                const winningDelete = await db.first<Change>(`
+                    SELECT * FROM "crr_changes" 
+                    WHERE type = 'delete' AND tbl_name = ? AND pk = ? AND created_at > ? + ?
+                `, [parent.tblName, parent.pk, timeIncChange, dwa]);
+                if (winningDelete) {
+                    // Skip inserting
+                    console.log(`There were a winning delete on the parent so we skipped proceeding with the change`);
+                    return false;
+                } else {
+                    // The deletion of this row happended through an ON DELETE CASCADE, keep searching for the root of the cascade.
+                    root = { tblName: fkRel.tblName, pk: fkRel.pk };
 
-                const parentRels = await parentFkRelations(parent.tblName, parent.pk);
-                if (Object.keys(parentRels).length === 0) break; // Parent doesn't have any fk relations
+                    const parentRels = await parentFkRelations(parent.tblName, parent.pk);
+                    if (Object.keys(parentRels).length === 0) break; // Parent doesn't have any fk relations
 
-                queue.push(parentRels);
+                    queue.push(parentRels);
+                }
             }
         }
     }
 
-    // Begin inserting the child rows for each parent from top to bottom in the tree.
+    // Next phase:
+    // Insert the resurrected parents, and any of its child rows that also should be resurrected.
     const parentQueue = [root];
     while (parentQueue.length !== 0) {
         const parent = parentQueue.pop() as { tblName: string, pk: string };
@@ -350,45 +360,115 @@ const resurrectDeletedRows = async (db: SqliteDB, changeSet: Change[]) => {
         // Reconstruct the parent if it is deleted!
         if (changeSet[0].type === 'insert' && tblName === parent.tblName && pk === parent.pk) {
             // This is a newly inserted row. There can't possibly be any children to resurrect
-            return;
-        } else {
-            let parentRow = await db.first<any | undefined>(`SELECT * FROM "${parent.tblName}" WHERE ${pkEqual(db, parent.tblName, parent.pk)}`, []);
-            if (parentRow === undefined) {
-                parentRow = await reconstructRowFromHistory(db, parent.tblName, parent.pk);
-                if (parentRow === undefined || Object.keys(parentRow).length === 0) return console.error(`Failed to reconstruct parent row (${parent.tblName}, ${parent.pk})`);
+            return true;
+        }
 
-                const err = await insertRows(db, parent.tblName, [parentRow]);
-                if (err) return console.error(err);
+        let parentRow = await db.first<any | undefined>(`SELECT * FROM "${parent.tblName}" WHERE ${pkEqual(db, parent.tblName, parent.pk)}`, []);
+        if (parentRow === undefined) {
+            parentRow = await reconstructRowFromHistory(db, parent.tblName, parent.pk);
+            if (parentRow === undefined || Object.keys(parentRow).length === 0) {
+                console.error(`Failed to reconstruct parent row (${parent.tblName}, ${parent.pk})`);
+                return false;
             }
 
-            console.log(`Parent ('${parent.tblName}', ${parentRow["title"]})`);
+            const err = await insertRows(db, parent.tblName, [parentRow]);
+            if (err) {
+                console.error(err);
+                return false;
+            }
+
+            console.log(`Resurrected parent: ('${parent.tblName}', ${parentRow["title"]})`);
         }
 
         const childRelations = childFkRelations(db, parent.tblName, parent.pk);
-        console.log(`Child relations: `, childRelations);
         for (const fkRel of childRelations) {
-            // Shouldn't we check if the child row is actually dead? If so, we shouldn't try and resurrect it.
             const childTblName = fkRel.childTblName;
 
-            const childPks = await db.select<{ pk: string }[]>(`SELECT pk FROM "crr_changes" WHERE tbl_name = ? AND col_id = ? AND value = ? ORDER BY created_at DESC`, [fkRel.childTblName, fkRel.childColId, fkRel.pk]);
+            const childPkRows = await db.select<{ pk: string }[]>(`
+                SELECT pk FROM "crr_changes" 
+                WHERE tbl_name = ? AND col_id = ? AND value = ? 
+                ORDER BY created_at DESC
+            `, [fkRel.childTblName, fkRel.childColId, fkRel.pk]);
+
+            let childPks = childPkRows.map(row => row.pk);
+
+            console.log(`About to resurrect the following pks in table '${fkRel.childTblName}'`, childPks);
+
+            // @Speed @Cleanup - These queries should really just be in-memory lookups over the child changes
+            // 
+            // Find children that should not be resurrected because the parent has a winning delete over the
+            // last change to the child or the child it-self has a winning delete over its own changes.
+            const parentDelete = await db.first<Change>(`
+                SELECT * FROM "crr_changes" 
+                WHERE tbl_name = ? AND pk = ? AND type = 'delete'
+                ORDER BY created_at DESC
+            `, [fkRel.tblName, fkRel.pk]);
+            if (parentDelete) {
+                // const parentDwa = db.crrColumns[fkRel.tblName][0].delete_wins_after;
+                const childDwa = db.crrColumns[fkRel.childTblName][0].delete_wins_after;
+
+                const childPkRowsToResurrect = await db.select<{ pk: string }[]>(`
+                    SELECT DISTINCT pk FROM "crr_changes" 
+                    WHERE type != 'delete' AND tbl_name = ? AND pk IN (${sqlPlaceholders(childPks)}) AND created_at > ? - ?
+                    ORDER BY created_at DESC
+                `, [fkRel.childTblName, ...childPks, parentDelete.created_at, childDwa]);
+
+                console.log(`Child pks not to resurrect`, childPkRowsToResurrect);
+                
+                const childPksLosingToParent = childPkRowsToResurrect.map(row => row.pk);
+
+                childPks = childPks.filter(pk => !childPksLosingToParent.includes(pk));
+
+                // Check if the children themselves have a deletion on them that is winning over the set of its own changes
+                const priorChildChanges = await db.select<Change[]>(`
+                    SELECT * FROM "crr_changes" 
+                    WHERE type = 'delete' AND tbl_name = ? AND pk IN (${sqlPlaceholders(childPks)})
+                    ORDER BY created_at DESC
+                `, [fkRel.childTblName, ...childPks]);
+
+                const priorChildDeletions = priorChildChanges.filter(change => change.type === 'delete');
+                const childPksWithWinningDeletes: string[] = [];
+                for (const del of priorChildDeletions) {
+                    const latestChange = priorChildChanges.find(change => change.type !== 'delete' && change.pk === del.pk); // latest because we sorted the priorChildChanges
+                    if (latestChange === undefined) {
+                        console.error(`Row with delete change didn't have any other changes when figuring out if the row should be resurrected`);
+                        return false;
+                    }
+                    if (latestChange.created_at < del.created_at - childDwa) {
+                        childPksWithWinningDeletes.push(del.pk);
+
+                        console.log(`Child ${fkRel.childTblName} didn't get resurrected because it had a winning delete on it`);
+                    }
+                }
+
+                childPks = childPks.filter(pk => !childPksWithWinningDeletes.includes(pk));
+            }
+
             const childRows = [];
             for (const childPk of childPks) {
-                const child = await reconstructRowFromHistory(db, childTblName, childPk.pk);
+                const child = await reconstructRowFromHistory(db, childTblName, childPk);
                 childRows.push(child);
+                console.log(`Resurrected child: ('${fkRel.childTblName}', '${child["title"]}')`);
             }
+
             const err = await insertRows(db, childTblName, childRows);
-            if (err) return console.error(err);
+            if (err) {
+                console.error(err);
+                return false;
+            }
 
             // Each child gets to be the parent in the next iteration of resurrection.
             // We grab all of the child of child foreign relationships and add that to the queue of
             // relations to visit.
             for (let i = 0; i < childRows.length; i++) {
-                const childPk = childPks[i].pk;
+                const childPk = childPks[i];
                 const grandChildRelations = childFkRelations(db, childTblName, childPk);
                 parentQueue.push(...grandChildRelations);
             }
         }
     }
+
+    return true;
 }
 
 const lastSyncWithPeer = async (db: SqliteDB, siteId: string) => {
