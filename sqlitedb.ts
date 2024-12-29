@@ -253,7 +253,7 @@ export class SqliteDB {
         const pks: { [tblName: string]: string[] } = {};
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
-            const columns = await this.select(`PRAGMA table_info('${table.name}')`, []);
+            const columns = await this.select<{ name: string, pk: number }[]>(`PRAGMA table_info('${table.name}')`, []);
             pks[table.name] = columns.filter(c => c.pk !== 0).map(c => c.name);
         }
         this.pks = pks;
@@ -276,7 +276,9 @@ export class SqliteDB {
     }
 }
 
-export const createDb = async (workerScriptPath: string): Promise<SqliteDB> => {
+export const createDb = async (dbName: string = 'main'): Promise<SqliteDB> => {
+    const workerScriptPath = `./sqlite-worker.js?dbName=${dbName}`;
+
     // Setup up a message channel to communicate with worker thread
     const { port1, port2 } = new MessageChannel();
     port1.start();

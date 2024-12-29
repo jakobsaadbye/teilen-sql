@@ -1,4 +1,15 @@
-Deletions:
-    - Deletion should also check any referencing rows before completing the deletion!
-    - resurrectRows is not accounting for actually deleted rows? Should do the opposite of 
-      what the deletion phase does!
+Report:
+    - Frontpage
+    - Acknowledgements
+    - Explain the problem teilen-sql wants to solve (introduction)
+    - Explain similar work (cr-sqlite, automerge, yjs, riffle, linear)
+    - Explain local-first
+    - Explain crdts's / delta crdt's
+    - Explain crr's
+    - Explain wa-sqlite???
+    - Explain reactive queries
+    - Explain fractional indexing
+    - Explain syncing changes??
+    - Explain merging of state (insert, update, delete)
+    - References
+    - Github for the implementation
