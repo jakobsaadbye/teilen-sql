@@ -122,7 +122,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         // NOTE: Deletions are based on a hybrid between Add-Wins and Remove-Wins set
         // based on a user defined 'delete_wins_after' field. If no 'new' updates have been
         // made to the row or any referencing rows since the deletion - 'delete_wins_after', then the row
-        // gets deleted.
+        // gets deleted. Otherwise it gets ignored.
         const deletes = changes.filter(c => c.type === 'delete');
         const rowsToDelete: { [tblName: string]: string[] } = {};
         for (const del of deletes) {
@@ -130,7 +130,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             const dwa = db.crrColumns[del.tbl_name][0].delete_wins_after;
             const newChangesToThisRow = await db.select<Change[]>(`
                 SELECT * FROM "crr_changes" 
-                WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND pk = ? AND applied_at >= ? - ? 
+                WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND pk = ? AND created_at >= ? - ? 
                 ORDER BY created_at DESC
             `, [del.site_id, del.tbl_name, del.pk, del.created_at, dwa]);
 
@@ -154,7 +154,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                         const dwa = db.crrColumns[rel.childTblName][0].delete_wins_after;
                         const newChanges = await db.select<Change[]>(`
                             SELECT * FROM "crr_changes" 
-                            WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND applied_at >= ? - ? AND pk IN (${sqlPlaceholders(childPks)}) 
+                            WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND created_at >= ? - ? AND pk IN (${sqlPlaceholders(childPks)}) 
                             ORDER BY created_at DESC
                         `, [del.site_id, rel.childTblName, del.created_at, dwa, ...childPks]);
 
