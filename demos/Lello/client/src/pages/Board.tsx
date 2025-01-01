@@ -115,7 +115,7 @@ export const BoardPage = () => {
             <div className='flex flex-col h-full px-4'>
                 <header className='flex mb-16 w-full justify-center items-center text-center'>
                     <input
-                        className='ml-32 text-5xl text-white font-bold bg-transparent'
+                        className='text-5xl text-white font-bold bg-transparent'
                         value={board.title}
                         maxLength={32}
                         onChange={(e) => updateTitle(e.target.value)}

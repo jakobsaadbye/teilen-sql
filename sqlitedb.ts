@@ -1,5 +1,6 @@
 import { ms } from "./ms.ts"
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client } from "./change.ts";
+import { insertTablesStmt } from "./tables.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -42,23 +43,6 @@ export class SqliteDB {
             }
             bc.postMessage(event.data);
         });
-
-        // Get or assign a unique site_id
-        this.select(`SELECT * FROM "crr_clients" WHERE is_me = true`, [])
-            .then(rows => {
-                if (rows.length > 0) {
-                    this.siteId = rows[0].site_id;
-                } else {
-                    const id = crypto.randomUUID();
-                    this.exec(`INSERT INTO "crr_clients" (site_id, is_me) VALUES (?, true)`, [id])
-                        .then(() => {
-                            console.log("Assigned a new site_id");
-                            this.siteId = id;
-                        })
-                        .catch(e => console.error("Failed to insert a new site_id", e));
-                }
-            })
-            .catch(e => console.error("Failed to get site_id", e));
 
         // Enable foreign key constraints
         this.exec(`PRAGMA foreign_keys = ON`, []);
@@ -299,12 +283,34 @@ export const createDb = async (dbName: string = 'main'): Promise<SqliteDB> => {
     });
 
     if (!ok) {
-        console.log(`Failed to receive ready event`);
-        throw new Error("Failed to create the database");
+        throw new Error("Failed to connect to the database");
     }
 
-    console.log(`Succesfully connected to database ...`);
-    return new SqliteDB(port1);
+    console.log(`Connected to the database ...`);
+    const db = new SqliteDB(port1);
+
+    // Setup tables
+    const err = await db.exec(insertTablesStmt, []);
+    if (err) {
+        throw new Error("Failed to insert necessary tables. " + err);
+    }
+
+    // Get or assign a unique site_id
+    const me = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE is_me = true`, [])
+    if (!me) {
+        const id = crypto.randomUUID();
+        const err = await db.exec(`INSERT INTO "crr_clients" (site_id, is_me) VALUES (?, true)`, [id])
+        if (err) {
+            throw new Error(`Failed to assign this browser a site_id. Maybe try refreshing the browser`)
+        }
+
+        console.log("Assigned a new site_id");
+        db.siteId = id;
+    } else {
+        db.siteId = me.site_id;
+    }
+    
+    return db;
 }
 
 

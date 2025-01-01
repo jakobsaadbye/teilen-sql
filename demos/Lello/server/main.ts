@@ -41,14 +41,16 @@ app.get("/", (req: Request, res: Response) => {
 app.post("/changes", async (req: Request, res: Response) => {
   const { changes } = req.body;
   try {
-    const err = await applyChanges(wDb, changes);
-    if (err) {
-      console.error(err);
-      res.status(400);
-      res.send(err);
-    } else {
-      res.sendStatus(200);
-    }
+    await db.transaction(async () => {
+      const err = await applyChanges(wDb, changes);
+      if (err) {
+        console.error(err);
+        res.status(400);
+        res.send(err);
+      } else {
+        res.sendStatus(200);
+      }
+    })();
   } catch (e) {
     console.error(e);
     res.status(400);

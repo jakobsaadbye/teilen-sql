@@ -35,6 +35,8 @@ create table if not exists crr_changes(
     primary key(type, tbl_name, col_id, pk)
 );
 
+create index if not exists crr_changes_index on crr_changes(tbl_name);
+
 create table if not exists crr_columns(
     tbl_name text not null,
     col_id text not null,

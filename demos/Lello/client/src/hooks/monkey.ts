@@ -46,6 +46,7 @@ export const useGoBananas = (boardId?: string) => {
 
             const action = pickRandomAction(rngActions);
             switch (action) {
+                case 'pullChanges': { await pullChanges(syncer); break; }
                 case 'pushChanges': { await pushChanges(syncer); break; }
                 case 'addColumn': { await addColumn(db, boardId); break; }
                 case 'addTodo': { await addTodo(db, boardId); break; }
@@ -68,6 +69,10 @@ export const useGoBananas = (boardId?: string) => {
 
 const clearBoard = async (db: SqliteDB, boardId: string) => {
     await db.exec(`DELETE FROM "columns" WHERE board_id = ?`, [boardId]);
+}
+
+const pullChanges = async (syncer: Syncer) => {
+    await syncer.pullChanges();
 }
 
 const pushChanges = async (syncer: Syncer) => {
