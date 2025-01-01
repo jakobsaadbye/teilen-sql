@@ -1,10 +1,10 @@
 import React from "react";
-import { useQuery, useSyncer } from "../../../teilen-sql/react.ts";
-import { SqliteDB } from "../../../teilen-sql/sqlitedb.ts";
+import { Change, getChangeSets } from "@teilen-sql/change.ts";
+import { useQuery, useSyncer } from "@teilen-sql/react.ts";
+import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
 import { useGoBananas } from "../hooks/monkey.ts";
 import { useIcon } from "../hooks/useIcon.ts"
 import { twMerge } from 'tailwind-merge'
-import { Change, getChangeSets } from "../../../teilen-sql/change.ts";
 
 const changesCount = async (db: SqliteDB) => {
     const client = await db.first(`SELECT * FROM "crr_clients" WHERE site_id = $1`, [db.siteId]);

@@ -1,7 +1,7 @@
 import React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useIcon } from "../hooks/useIcon.ts";
-import { useDB, useQuery } from "../../../teilen-sql/react.ts"
+import { useDB, useQuery } from "@teilen-sql/react.ts"
 import { twMerge } from "tailwind-merge";
 
 type Props = {

@@ -1,4 +1,4 @@
-import { SqliteDB } from "../../../../teilen-sql/sqlitedb.ts";
+import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
 import { Board, BoardDetail, Column, Todo } from "../types.ts";
 
 export class BoardRepo {

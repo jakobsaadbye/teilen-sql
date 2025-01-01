@@ -3,16 +3,16 @@ import express, { NextFunction, Request, Response } from "npm:express@4.18.2";
 import bodyParser from "npm:body-parser";
 import cors from "npm:cors"
 
-import { SqliteDBWrapper } from "../teilen-sql/dbwrapper.ts"
-import { applyChanges } from "../teilen-sql/change.ts"
+import { SqliteDBWrapper } from "../../../dbwrapper.ts"
+import { applyChanges } from "../../../change.ts"
 
 import { Database } from "jsr:@db/sqlite@0.12";
-import { SqliteDB } from "../teilen-sql/sqlitedb.ts";
+import { SqliteDB } from "../../../sqlitedb.ts";
 
 const PORT = 3000;
 
 const db = new Database("lello.db", { int64: true }); // int64 here is important for the timestamps, defaults to false, sigh ...
-const sql = Deno.readTextFileSync("/Users/jsaad/Lello/server/tables.sql");
+const sql = Deno.readTextFileSync("tables.sql");
 db.exec(sql);
 
 const wDb = new SqliteDBWrapper(db) as unknown as SqliteDB;

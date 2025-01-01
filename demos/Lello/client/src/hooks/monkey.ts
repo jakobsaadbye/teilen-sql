@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useDB, useSyncer } from "../../../teilen-sql/react.ts";
-import { SqliteDB } from "../../../teilen-sql/sqlitedb.ts";
+import { useDB, useSyncer } from "@teilen-sql/react.ts";
+import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
 import { BoardRepo } from "../db/repo/boardRepo.ts";
 import { Column, Todo } from "../db/types.ts";
-import { Syncer } from "../../../teilen-sql/syncer.ts";
+import { Syncer } from "@teilen-sql/syncer.ts";
 
 const columnTitles = ["Procrastination Station", "Ideas That Seemed Good at 2 AM", "To-Don't List", "Oops, Wrong Column", "Future Million-Dollar Ideas", "Oops, Already Done", "Tasks Nobody Wants", "Legendary Coffee Breaks", "Meetings That Could Be Emails", "When Pigs Fly", "Low-Key Panic Zone", "Epic Fails Archive", "Unicorn Hunting Grounds", "Infinite To-Dos", "Someday, Maybe... Probably Not", "Brainstorm or Brainfart?", "Overthinking Central", "Ctrl+Z All Day", "In Case of Emergency, Delete This", "High Hopes, Low Effort"];
 const todoTitles = ["Buy Milk... and Cookies (for science)", "Figure Out Why Plants Keep Dying", "Finally Learn to Fold a Fitted Sheet", "Write 'TODO' List for Tomorrow", "Find Out Where All the Socks Go", "Become a Morning Person (Optional)", "Cancel Free Trial Before Getting Charged", "Invent Time Travel – Should Be Easy", "Train Cat to Fetch Coffee", "Schedule Nap Between Naps", "Finish Book I Started 3 Years Ago", "Rename Wi-Fi to 'Hack Me If You Can'", "Replace Batteries in Remote (Maybe)", "Find a New Hobby – Netflix Doesn't Count", "Apologize to Houseplants for Neglect", "Plan World Domination (Later, Too Busy)", "Teach Dog to Use Zoom", "Convince Friends I'm Funny", "Remember Why I Walked into This Room", "Prove to Myself I Can Cook (Good Luck)"];

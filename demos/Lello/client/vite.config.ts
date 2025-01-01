@@ -19,6 +19,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: [
+      { find: '@teilen-sql', replacement: path.resolve(__dirname + "/../../../")},
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
     ],
   },
@@ -26,7 +27,7 @@ export default defineConfig({
     fs: {
       allow: [
         path.resolve(__dirname),
-        path.resolve(__dirname + "/../teilen-sql"), // @Temporary - This will not be need if teilen-sql was made into an npm package such that it could live in this project
+        path.resolve(__dirname + "/../../../"), // @Temporary - This will not be needed if teilen-sql was made into an npm package such that it could live in this project
       ]
     }
   }
