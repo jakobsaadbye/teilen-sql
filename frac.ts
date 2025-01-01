@@ -7,7 +7,7 @@ import { assert } from "jsr:@std/assert@^0.217.0/assert";
  * Main idea is to represent fractions as strings. So f.x the fraction 0.5 gets the value "5", 0.75 gets "75" and so on.
  * Because we use strings we preserve simple ordering by comparing strings a < b in lexicographical order
  * 
- * Base 62 is used for compressing the length but any ascii base could be used. Figma f.x uses the full ascii range with base 92
+ * Base 52 is used for compressing the length but any ascii base could be used. Figma f.x uses the full ascii range with base 92
  * 
  */
 
