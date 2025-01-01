@@ -8,6 +8,9 @@ This project is heavily inspired by the cr-sqlite project by Matt Wonlaw so chec
 
 This framework is purely in javascript/typescript working on-top of wa-sqlite to have sqlite in the browser. Being in javascript rather than a compiled wasm-module means its easier to debug and understand what is going on. Ofc, this has the disadvantage of tying any use of this framework to also be in javascript. Roadmap is to port the core into a C or Rust library at some point for performance and just provide simple database wrappers for a handful of different languages to make it more interoperable.
 
+## \*\*\*Disclaimer\*\*\*
+This library is not really made for production use yet as its still very experimental. Use it at your own will
+
 ## Features
 
 ⚡️ Reactive sql queries through a React hook
