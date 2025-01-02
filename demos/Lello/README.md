@@ -9,6 +9,8 @@ Collaborate on the board by syncing changes to others.
   <source src="demo.mov" type="video/mp4">
 </video>
 
+![Demo of sync](demo.mov)
+
 ## Quick start
 
 Install deno if not already installed:

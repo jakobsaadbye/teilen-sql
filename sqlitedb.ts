@@ -130,13 +130,13 @@ export class SqliteDB {
     }
 
     async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
-        const deleteWinsAfterMs = ms(deleteWinsAfter);
+        const dwaMs = ms(deleteWinsAfter);
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
         const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${deleteWinsAfterMs}', null)`;
-            else return `('${tblName}', '${c.name}', 'lww', null, null, '${deleteWinsAfterMs}', null)`;
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${dwaMs}', null)`;
+            else return `('${tblName}', '${c.name}', 'lww', null, null, '${dwaMs}', null)`;
         }).join(',');
         const err = await this.exec(`
             INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, delete_wins_after, parent_col_id)
@@ -309,7 +309,7 @@ export const createDb = async (dbName: string = 'main'): Promise<SqliteDB> => {
     } else {
         db.siteId = me.site_id;
     }
-    
+
     return db;
 }
 

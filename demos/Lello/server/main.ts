@@ -3,11 +3,11 @@ import express, { NextFunction, Request, Response } from "npm:express@4.18.2";
 import bodyParser from "npm:body-parser";
 import cors from "npm:cors"
 
-import { SqliteDBWrapper } from "../../../dbwrapper.ts"
-import { applyChanges } from "../../../change.ts"
-
 import { Database } from "jsr:@db/sqlite@0.12";
-import { SqliteDB } from "../../../sqlitedb.ts";
+import { SqliteDBWrapper } from "@teilen-sql/sqlitedbWrapper.ts"
+import { applyChanges } from "@teilen-sql/change.ts"
+import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
+
 
 const PORT = 3000;
 
