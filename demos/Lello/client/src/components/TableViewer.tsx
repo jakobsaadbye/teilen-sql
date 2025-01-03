@@ -1,8 +1,9 @@
-import React from "react";
+import React, { ChangeEvent, KeyboardEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useIcon } from "../hooks/useIcon.ts";
 import { useDB, useQuery } from "@teilen-sql/react.ts"
 import { twMerge } from "tailwind-merge";
+import { sqlDetermineOperation } from "@teilen-sql/change.ts";
 
 type Props = {
 
@@ -23,11 +24,16 @@ export const TableViewer = ({ }: Props) => {
     const db = useDB();
 
     const [show, setShow] = useState(false);
-    const [mode, setMode] = useState<'data' | 'structure'>('data');
+    const [mode, setMode] = useState<'data' | 'structure' | 'query'>('data');
+    const [fullscreen, setFullscreen] = useState(localStorage.getItem("tw_fullscreen") ?? "");
     const [selectedItems, setSelectedItems] = useState<SelectedItems>(undefined);
     const [tableRightClicked, setTableRightClicked] = useState<RightClickTableEvent>(undefined);
     const [st, setSt] = useState<string | undefined>(undefined);
     const [orderBy, setOrderBy] = useState({});
+
+    const [sqlEditorOpen, setSqlEditorOpen] = useState(false);
+    const [sqlEditorResults, setSqlEditorResults] = useState<{columns: any[], rows: any[]} | undefined>(undefined);
+    const [sqlEditorError, setSqlEditorError] = useState<any | undefined>(undefined);
 
     const orderByString = (orderBy) => {
         if (orderBy[st] === undefined) return '';
@@ -52,7 +58,7 @@ export const TableViewer = ({ }: Props) => {
                 setShow(prev => !prev);
                 handled = true;
             }
-            if (e.shiftKey && e.key === 'Backspace') {
+            if (selectedItems && e.key === 'Backspace') {
                 handleDeleteItems();
                 handled = true;
             }
@@ -62,6 +68,20 @@ export const TableViewer = ({ }: Props) => {
             }
             if (e.metaKey && e.key === 'a') {
                 selectAll();
+                handled = true;
+            }
+            if (e.ctrlKey && e.key === 's') {
+                setSqlEditorOpen(prev => !prev);
+                handled = true;
+            }
+            if (e.ctrlKey && e.key === 'f') {
+                if (!fullscreen) {
+                    setFullscreen("Y");
+                    localStorage.setItem("tw_fullscreen", "Y");
+                } else {
+                    setFullscreen("");
+                    localStorage.setItem("tw_fullscreen", "");
+                }
                 handled = true;
             }
 
@@ -76,7 +96,14 @@ export const TableViewer = ({ }: Props) => {
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
-    }, [selectedItems]);
+    }, [selectedItems, fullscreen]);
+
+    const onSqlEditorResults = (rows: any[]) : void => {
+        if (rows.length === 0) return;
+        const columns = Object.keys(rows[0]);
+        setSqlEditorResults({ columns, rows });
+        setMode('query');
+    }
 
     const handleDeleteItems = async () => {
         if (selectedItems === undefined) return;
@@ -139,6 +166,9 @@ export const TableViewer = ({ }: Props) => {
         if (e.type === "click") {
             setSt(tables[tableIndex].name);
             setSelectedItems({ type: 'table', items: [tableIndex] });
+            if (mode === 'query') {
+                setMode('data');
+            }
         }
         if (e.type === "contextmenu") {
             setTableRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
@@ -174,11 +204,13 @@ export const TableViewer = ({ }: Props) => {
 
     const { XIcon, Table, ChevronUp, ChevronDown } = useIcon();
 
+    const height = fullscreen ? "h-full" : "h-96"
+
     if (!show) return <></>
     return (
         <>
             <TableDropdown tables={tables} event={tableRightClicked} />
-            <div className="absolute bottom-0 w-full h-96 rounded-md bg-white cursor-default overflow-clip" onClick={deselectAll}>
+            <div className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`} onClick={deselectAll}>
                 <header className="flex justify-end bg-gray-200">
                     <XIcon onClick={() => setShow(false)} className="w-8 h-8 fill-gray-500" />
                 </header>
@@ -219,6 +251,11 @@ export const TableViewer = ({ }: Props) => {
                                             {name}
                                         </th>
                                     ))}
+                                    {mode === 'query' && sqlEditorResults && sqlEditorResults.columns.map((name, i) => (
+                                        <th key={i} className="border-r border-gray-50">
+                                            {name}
+                                        </th>
+                                    ))}
                                 </tr>
                             </thead>
                             <tbody className="select-none">
@@ -236,6 +273,11 @@ export const TableViewer = ({ }: Props) => {
                                         {Object.values(col).map((v: any, i) => <td key={i} className="border-r border-gray-50">{v}</td>)}
                                     </tr>
                                 ))}
+                                {mode === 'query' && sqlEditorResults && sqlEditorResults.rows.map((row, i) => (
+                                    <tr key={i} className={`flex-1 h-8 truncate overflow-scroll ${i % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'}`}>
+                                        {Object.values(row).map((v: any, i) => <td key={i} className="border-r border-gray-50">{v}</td>)}
+                                    </tr>
+                                ))}
                             </tbody>
                         </table>
                         <footer className="absolute bottom-8 py-2 mb-0 bg-gray-300 w-full">
@@ -244,15 +286,115 @@ export const TableViewer = ({ }: Props) => {
                                     <p onClick={() => setMode('data')} className={`px-4 ${mode === 'data' && 'bg-gray-100'}`}>Data</p>
                                     <p onClick={() => setMode('structure')} className={`px-4 ${mode === 'structure' && 'bg-gray-100'}`}>Structure</p>
                                 </div>
-                                <p className="text-gray-600">{rowCount?.count ?? 0} rows</p>
+
+                                {(mode === 'data' || mode === 'structure') && <p className="text-gray-600">{rowCount?.count ?? 0} rows</p>}
+                                {mode === 'query' && <p className="text-gray-600">{sqlEditorResults?.rows.length ?? 0} rows</p>}
+                                
                                 <p></p>
                                 <p></p>
                             </div>
                         </footer>
                     </div>
+
+                    <SqlEditor isOpen={sqlEditorOpen} onResults={onSqlEditorResults} />
                 </div>
             </div>
         </>
+    );
+}
+
+type SqlEditorProps = {
+    isOpen: boolean
+    onResults: (rows: any[]) => void
+}
+
+const SqlEditor = ({ isOpen, onResults } : SqlEditorProps) => {
+    const db = useDB();
+
+    const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
+    const [sqlError, setSqlError] = useState(undefined);
+    const [lineCount, setLineCount] = useState(1);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            let handled = false;
+            if (e.metaKey && e.key === 'Enter') {
+                runSql(sql);
+                handled = true;
+            }
+
+            if (handled) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+        };
+        document.addEventListener('keydown', handleKeyDown);
+
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [sql]);
+
+    const runSql = async (sql: string) => {
+        console.log(sql);
+        
+        const operation = sqlDetermineOperation(sql);
+        if (operation === 'select' || operation === 'pragma') {
+            const {data, error} = await db.selectWithError(sql, []);
+            if (error) {
+                console.log(error.message);
+                setSqlError(error.message);
+            } else {
+                onResults(data as any[]);
+            }
+        } else {
+            const err = await db.exec(sql, []);
+            if (err) {
+                setSqlError(err.message);
+            };
+        }
+    }
+
+    const textChanged = (e: ChangeEvent) => {
+        const numLines = e.target.value.split("\n").length;
+        setLineCount(numLines);
+        setSql(e.target.value);
+        setSqlError(undefined);
+        localStorage.setItem("tw_sql_editor_query", e.target.value);
+    }
+
+    const putCursorAtEndOfInput = (e: ChangeEvent) => {
+        if (e === undefined) return;
+        const t = e.target.value;
+        e.target.value = '';
+        e.target.value = t;
+    }
+
+    if (!isOpen) return <></>
+
+    return (
+        <div className="w-full p-1 border-l-4 border-gray-300">
+            {sqlError && (
+                <div className="">
+                    <p className="text-red-400">{sqlError}</p>
+                </div>
+            )}
+            <div className="flex w-full h-full space-x-2">
+                <div className="flex flex-col">
+                    {Array.from({length: lineCount}).map((_, i) => (
+                        <p key={i} className="w-4 text-gray-400 select-none">{i+1}</p>
+                    ))}
+                </div>
+                <textarea
+                    className="w-full h-full font-normal focus:outline-none"
+                    value={sql}
+                    onChange={textChanged}
+                    onFocus={putCursorAtEndOfInput}
+                    autoFocus
+                />
+            </div>
+        </div>
     )
 }
 
