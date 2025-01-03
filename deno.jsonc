@@ -5,7 +5,12 @@
   "nodeModulesDir": "auto",
   "imports": {
     "@/" : "./",
+    "@codemirror/autocomplete": "npm:@codemirror/autocomplete@^6.18.4",
+    "@codemirror/lang-sql": "npm:@codemirror/lang-sql@^6.8.0",
+    "@codemirror/view": "npm:@codemirror/view@^6.36.1",
     "@types/react": "npm:@types/react@^19.0.2",
+    "@uiw/codemirror-theme-github": "npm:@uiw/codemirror-theme-github@^4.23.7",
+    "@uiw/react-codemirror": "npm:@uiw/react-codemirror@^4.23.7",
     "preact/": "https://esm.sh/preact@10.19.2/",
     "react": "npm:react@^19.0.0",
     "tailwind": "npm:tailwind@^4.0.0",

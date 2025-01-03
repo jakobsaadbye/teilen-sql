@@ -1,10 +1,11 @@
+import React from 'react';
+
 import { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { twMerge } from "tailwind-merge";
 import { useDB, useQuery } from "../hooks.ts"
 import { sqlDetermineOperation } from "../../change.ts";
 import { SqliteColumnInfo } from "@/sqlitedb.ts";
-import { useIcon } from "../../demos/Lello/client/src/hooks/useIcon.ts";
 
 import XIcon from "./icons/x.svg?react";
 import TableIcon from "./icons/table.svg?react";
@@ -400,6 +401,12 @@ export const TableViewer = () => {
     );
 }
 
+import CodeMirror from '@uiw/react-codemirror';
+import { keymap } from "@codemirror/view";
+import { sql as sqlLang, SQLite } from "@codemirror/lang-sql";
+import { autocompletion } from "@codemirror/autocomplete";
+import { githubLight } from "@uiw/codemirror-theme-github";
+
 type SqlEditorProps = {
     isOpen: boolean
     onResults: (rows: any[]) => void
@@ -410,28 +417,6 @@ const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
 
     const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
     const [sqlError, setSqlError] = useState(undefined);
-    const [lineCount, setLineCount] = useState(1);
-
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            let handled = false;
-            if (e.metaKey && e.key === 'Enter') {
-                runSql(sql);
-                handled = true;
-            }
-
-            if (handled) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-
-        };
-        document.addEventListener('keydown', handleKeyDown);
-
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [sql]);
 
     const runSql = async (sql: string) => {
         const operation = sqlDetermineOperation(sql);
@@ -453,22 +438,28 @@ const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
         }
     }
 
-    const textChanged = (e: ChangeEvent) => {
-        const numLines = e.target.value.split("\n").length;
-        setLineCount(numLines);
-        setSql(e.target.value);
-        localStorage.setItem("tw_sql_editor_query", e.target.value);
+    const textChanged = (value: any) => {
+        setSql(value);
+        localStorage.setItem("tw_sql_editor_query", value);
     }
 
-    const putCursorAtEndOfInput = (e: ChangeEvent) => {
-        if (e === undefined) return;
-        const t = e.target.value;
-        e.target.value = '';
-        e.target.value = t;
-    }
+    const customKeymap = keymap.of([
+        {
+            key: "ctrl-Enter",
+            run: () => {
+                runSql(sql);
+                return true;
+            },
+        },
+    ]);
+
+    const noCompletions = autocompletion({
+        override: [
+            () => null,
+        ],
+    });
 
     if (!isOpen) return <></>
-
     return (
         <div className="w-full p-1 border-l-4 border-gray-300">
             {sqlError && (
@@ -476,20 +467,18 @@ const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
                     <p className="text-red-400">{sqlError}</p>
                 </div>
             )}
-            <div className="flex w-full h-full space-x-2">
-                <div className="flex flex-col">
-                    {Array.from({ length: lineCount }).map((_, i) => (
-                        <p key={i} className="w-4 text-gray-400 select-none">{i + 1}</p>
-                    ))}
-                </div>
-                <textarea
-                    className="w-full h-full font-normal focus:outline-none"
-                    value={sql}
-                    onChange={textChanged}
-                    onFocus={putCursorAtEndOfInput}
-                    autoFocus
-                />
-            </div>
+            <CodeMirror
+                value={sql}
+                onChange={textChanged}
+                extensions={[
+                    sqlLang({ upperCaseKeywords: true, dialect: SQLite }),
+                    noCompletions,
+                    customKeymap,
+                ]}
+                className=" outline-none"
+                theme={githubLight}
+                autoFocus={true}
+            />
         </div>
     )
 }
