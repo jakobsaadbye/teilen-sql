@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
-import { useDB, useQuery } from "@teilen-sql/react.ts";
+import { useDB, useQuery } from "@teilen-sql/react/hooks.ts";
 import { Board, Column } from "../db/types.ts";
 import { BoardRepo } from "../db/repo/boardRepo.ts";
 import { ControlBar } from "../components/ControlBar.tsx";

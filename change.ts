@@ -184,20 +184,21 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
 
             const allNewChanges = [...newChangesToThisRow, ...newChildChanges];
             if (allNewChanges.length === 0) {
-                if (rowsToDelete[del.tbl_name] === undefined) rowsToDelete[del.tbl_name] = [del.pk]
+                if (rowsToDelete[del.tbl_name] === undefined) rowsToDelete[del.tbl_name] = [del.pk];
                 else rowsToDelete[del.tbl_name].push(del.pk);
 
                 // Mark any outstanding changes as 'old' since they were overwritten by the delete. This makes sure we don't
-                // sync old changes. In any case, old changes are also ignored when inserting in handleCompensations()
-                await db.exec(`UPDATE "crr_changes" SET applied_at = -1 WHERE tbl_name = ? AND pk = ?`, [del.tbl_name, del.pk]);
+                // sync old changes. In any case, old changes are also ignored when inserting in handleCompensations().
+                // @Question: Should we do this??? It seems to break. Somewhere this breaks i think
+                // await db.exec(`UPDATE "crr_changes" SET created_at = -1 AND applied_at = -1 WHERE tbl_name = ? AND pk = ?`, [del.tbl_name, del.pk]);
             } else {
                 // We make a 'counter' change that acts as a 'new' change
                 // that can get pushed to other clients so that they will reflect that the delete didn't happen.
                 // Its simply a re-play of the newest change so it won't have any effect.
                 // NOTE: Should this be re-playing all the new changes???
-                const newestChange = allNewChanges[0];
-                await saveChanges(db, [newestChange]);
-                console.log(`Produced a counter change`, newestChange);
+                const aNewChange = allNewChanges[0];
+                await saveChanges(db, [aNewChange]);
+                console.log(`Produced a counter change`, aNewChange);
             }
         }
         for (const [tblName, pks] of Object.entries(rowsToDelete)) {
@@ -449,12 +450,6 @@ const handleCompensations = async (db: SqliteDB, changeSet: Change[]) => {
     return true;
 }
 
-const lastSyncWithPeer = async (db: SqliteDB, siteId: string) => {
-    const peer = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [siteId]);
-    if (peer === undefined) return 0;
-    return peer.last_pulled_at;
-}
-
 const insertRows = async (db: SqliteDB, tblName: string, rows: any[]) => {
     if (rows.length === 0) return;
 
@@ -528,11 +523,12 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
         parentId: string
         posColId: string
     };
+
     const tables: { [tblName: string]: { [parentId: string]: List } } = {};
     for (const changeSet of fiChanges) {
         const pk = changeSet[0].pk;
         const tblName = changeSet[0].tbl_name;
-        const fiCol = db.crrColumns[tblName].find(col => col.type === 'fractional_index'); // @Incomplete: This assumes only one fractional index column in the changeSet
+        const fiCol = db.crrColumns[tblName].find(col => col.type === 'fractional_index'); // @Improvement: This assumes only one fractional index column in the table
         assert(fiCol !== undefined);
 
         const posColId = fiCol.col_id;
@@ -549,7 +545,8 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
             } else {
                 const row = await db.first<any>(`SELECT * FROM "${tblName}" WHERE ${pkEqual(db, tblName, pk)}`, []);
                 if (row === undefined) {
-                    console.log(`Row is missing with pk '${pk}'`);
+                    // The changes both contained an update and a delete to this row. Since the row is not here
+                    // it means that the delete took precedence over the update, so we just ignore it.
                     continue;
                 }
                 parentId = row[parentColId];
@@ -932,6 +929,21 @@ export const sqlAsSelectStmt = (sql: string) => {
 
 export const sqlPlaceholders = (a: any[]) => {
     return `${a.map(_ => `?`).join(',')}`;
+}
+
+type SqlOperation = "none" | "select" | "insert" | "update" | "delete" | "pragma";
+
+export const sqlDetermineOperation = (sql: string) : SqlOperation => {
+    const s = sql.trim().split(' ');
+    switch (s[0].toLowerCase()) {
+        case "select": return "select";
+        case "pragma": return "pragma";
+        case "insert": return "insert";
+        case "update": return "update";
+        case "delete": return "delete";
+        default: 
+            return "none"
+    }
 }
 
 export const sqlExplainExec = (sql: string): string => {

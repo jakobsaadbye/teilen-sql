@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useDB, useSyncer } from "@teilen-sql/react.ts";
+import { useDB, useSyncer } from "@teilen-sql/react/hooks.ts";
 import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
 import { BoardRepo } from "../db/repo/boardRepo.ts";
 import { Column, Todo } from "../db/types.ts";

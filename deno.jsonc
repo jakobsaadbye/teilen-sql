@@ -2,8 +2,18 @@
   "tasks" : {
         "test" : "deno run fracTest.ts"
   },
+  "nodeModulesDir": "auto",
   "imports": {
-    "react": "npm:react@^19.0.0"
+    "@/" : "./",
+    "@types/react": "npm:@types/react@^19.0.2",
+    "preact/": "https://esm.sh/preact@10.19.2/",
+    "react": "npm:react@^19.0.0",
+    "tailwind": "npm:tailwind@^4.0.0",
+    "tailwind-merge": "npm:tailwind-merge@^2.6.0"
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
   },
   "lint": {
     "rules": {

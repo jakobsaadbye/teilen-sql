@@ -4,12 +4,22 @@ import { insertTablesStmt } from "./tables.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
-type UpdateHookChange = {
+type SqliteUpdateHookChange = {
     updateType: 'delete' | 'insert' | 'update',
     dbName: string,
     tableName: string,
     rowid: bigint
 }
+
+export type SqliteColumnInfo = {
+    cid: number
+    dflt_value: string | null
+    name: string
+    notnull: number
+    pk: number
+    type: string
+}
+
 
 export type ForeignKey = {
     table: string
@@ -78,7 +88,7 @@ export class SqliteDB {
 
             const updateHook = new BroadcastChannel("update_hook");
             this.exec(sql, params, { notify: false });
-            const change: UpdateHookChange = await new Promise(resolve => {
+            const change: SqliteUpdateHookChange = await new Promise(resolve => {
                 updateHook.addEventListener('message', (event) => {
                     resolve(event.data);
                 });
@@ -166,7 +176,7 @@ export class SqliteDB {
         return fk
     }
 
-    private async getChangesetFromUpdate(change: UpdateHookChange): Promise<Change[]> {
+    private async getChangesetFromUpdate(change: SqliteUpdateHookChange): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);

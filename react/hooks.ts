@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { SqliteDB } from './sqlitedb.ts';
-import { Syncer } from "./syncer.ts";
-import { sqlExplainQuery } from "./change.ts";
+import { SqliteDB } from '../sqlitedb.ts';
+import { Syncer } from "../syncer.ts";
+import { sqlExplainQuery } from "../change.ts";
 
 export const SqliteContext = createContext<SqliteDB | null>(null);
 
@@ -17,8 +17,8 @@ export const useSyncer = (endpoint: string): Syncer => {
 
 // A QueryFunc is just any function that accepts the db as the first argument and returns data. 
 // All the values in the 'params' list are passed to the function.
-// Mostly used if you want to delegate out complex queries into a function that live elsewhere. 
-// NOTE: You need to specify the list of table dependencies for the function to re-run in the query options
+// Mostly used if you want to delegate out complex queries into a function that lives elsewhere. 
+// NOTE(*important*): You need to specify the list of table dependencies for the function to re-run in the query options
 type QueryFunc<T> = (db: SqliteDB, ...params: any) => Promise<T>;
 
 type UseQueryOptions = {

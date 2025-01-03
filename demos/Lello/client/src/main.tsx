@@ -2,9 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { SqliteContext } from '@teilen-sql/react.ts'
+import { SqliteContext } from '@teilen-sql/react/hooks.ts'
 import { createDb } from "@teilen-sql/sqlitedb.ts";
 import { tables } from "./db/tables.ts";
+import React from "react";
 
 const db = await createDb('main');
 await db.exec(tables, []);

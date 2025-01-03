@@ -28,12 +28,13 @@ export class Syncer {
                 let err = await applyChanges(this.#db, changes);
                 if (err) return console.error(err);
                 
-                err = await this.#db.exec(`UPDATE "crr_clients" SET last_pulled_at=? WHERE site_id = ?`, [pulledAt, this.#db.siteId]);
+                err = await this.#db.exec(`UPDATE "crr_clients" SET last_pulled_at = ? WHERE site_id = ?`, [pulledAt, this.#db.siteId]);
                 if (err !== undefined) console.error(err);
 
                 console.log(`Pulled ${changes.length} changes`);
             } else {
-                console.error(`Failed to pull changes`, res.status);
+                const data = await res.json();
+                console.error(`Failed to pull changes`, data.error);
             }
         } catch (e) {
             console.error(`Failed to pull changes`, e);

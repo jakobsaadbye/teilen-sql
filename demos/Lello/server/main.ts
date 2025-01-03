@@ -46,7 +46,7 @@ app.post("/changes", async (req: Request, res: Response) => {
       if (err) {
         console.error(err);
         res.status(400);
-        res.send(err);
+        res.send({ error: err });
       } else {
         res.sendStatus(200);
       }
@@ -54,7 +54,7 @@ app.post("/changes", async (req: Request, res: Response) => {
   } catch (e) {
     console.error(e);
     res.status(400);
-    res.send(e);
+    res.send({ error: e });
   }
 });
 
@@ -68,14 +68,14 @@ app.get("/changes", (req: Request, res: Response) => {
 
   try {
     const now = new Date().getTime();
-    const rows = db.prepare(`SELECT * FROM "crr_changes" WHERE site_id != ? AND applied_at >= ?`).all(siteId, lastPulledAt);
+    const rows = db.prepare(`SELECT * FROM "crr_changes" WHERE site_id != ? AND applied_at > ?`).all(siteId, lastPulledAt);
 
     res.status(200);
     res.send({ changes: rows, pulledAt: now });
   } catch (e) {
     console.error(e);
     res.status(400);
-    res.send(e);
+    res.send({ error: e })
   }
 });
 

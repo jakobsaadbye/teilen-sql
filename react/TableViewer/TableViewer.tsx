@@ -1,14 +1,17 @@
-import React, { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
+import { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { useIcon } from "../hooks/useIcon.ts";
-import { useDB, useQuery } from "@teilen-sql/react.ts"
 import { twMerge } from "tailwind-merge";
-import { sqlDetermineOperation } from "@teilen-sql/change.ts";
-import { SqliteColumnInfo } from "@teilen-sql/sqlitedb.ts";
+import { useDB, useQuery } from "../hooks.ts"
+import { sqlDetermineOperation } from "../../change.ts";
+import { SqliteColumnInfo } from "@/sqlitedb.ts";
+import { useIcon } from "../../demos/Lello/client/src/hooks/useIcon.ts";
 
-type Props = {
-
-}
+import XIcon from "./icons/x.svg?react";
+import TableIcon from "./icons/table.svg?react";
+import ChevronUp from "./icons/chevronUp.svg?react";
+import ChevronDown from "./icons/chevronDown.svg?react";
+import OpenFullscreen from "./icons/openFullscreen.svg?react";
+import CloseFullscreen from "./icons/closeFullscreen.svg?react";
 
 type SelectedItems = {
     type: 'table' | 'row'
@@ -21,7 +24,7 @@ type RightClickTableEvent = {
     mouseY: number
 } | undefined
 
-export const TableViewer = ({ }: Props) => {
+export const TableViewer = () => {
     const db = useDB();
 
     const [show, setShow] = useState(false);
@@ -259,7 +262,7 @@ export const TableViewer = ({ }: Props) => {
         return true;
     }
 
-    const { XIcon, Table, ChevronUp, ChevronDown, OpenFullscreen, CloseFullscreen } = useIcon();
+    // const { XIcon, Table, ChevronUp, ChevronDown, OpenFullscreen, CloseFullscreen } = useIcon();
 
     const height = fullscreen ? "h-full" : "h-96"
 
@@ -275,7 +278,7 @@ export const TableViewer = ({ }: Props) => {
                         </button>
                     </div>
                     <div className="flex space-x-2 items-center">
-                        { fullscreen && (
+                        {fullscreen && (
                             <button className="cursor-default" onClick={toggleFullscreen} title="Close fullscreen (ctrl+f)">
                                 <CloseFullscreen className="w-6 h-6 fill-gray-500" />
                             </button>
@@ -285,7 +288,7 @@ export const TableViewer = ({ }: Props) => {
                                 <OpenFullscreen className="w-6 h-6 fill-gray-500" />
                             </button>
                         )}
-                        <button className="cursor-default" onClick={() => setShow(false)} title="Close (ctrl+d)"><XIcon className="w-8 h-8 fill-gray-500"/></button>
+                        <button className="cursor-default" onClick={() => setShow(false)} title="Close (ctrl+d)"><XIcon className="w-8 h-8 fill-gray-500" /></button>
                     </div>
                 </header>
                 <div className="relative flex h-full w-full">
@@ -300,7 +303,7 @@ export const TableViewer = ({ }: Props) => {
                                         onContextMenu={(e) => handleClickTable(e, i)}
                                         className={`flex space-x-1 px-2 hover:bg-gray-200 ${isSelected('table', i) && 'bg-gray-100'}`}
                                     >
-                                        <Table className="w-6 h-6 fill-blue-400" />
+                                        <TableIcon className="w-6 h-6 fill-blue-400" />
                                         <p className="select-none">{table.name}</p>
                                     </div>
                                 )
