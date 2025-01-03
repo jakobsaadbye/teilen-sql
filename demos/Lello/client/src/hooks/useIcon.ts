@@ -9,6 +9,8 @@ import ArrowUp from "@/assets/icons/arrowUp.svg?react";
 import ArrowDown from "@/assets/icons/arrowDown.svg?react";
 import Rabbit from "@/assets/icons/rabbit.svg?react";
 import Block from "@/assets/icons/block.svg?react";
+import CloseFullscreen from "@/assets/icons/closeFullscreen.svg?react";
+import OpenFullscreen from "@/assets/icons/openFullscreen.svg?react";
 
 export const useIcon = () => {
     return {
@@ -23,5 +25,7 @@ export const useIcon = () => {
         ArrowDown,
         Rabbit,
         Block,
+        CloseFullscreen,
+        OpenFullscreen,
     }
 }

@@ -1,9 +1,10 @@
-import React, { ChangeEvent, KeyboardEvent } from "react";
+import React, { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useIcon } from "../hooks/useIcon.ts";
 import { useDB, useQuery } from "@teilen-sql/react.ts"
 import { twMerge } from "tailwind-merge";
 import { sqlDetermineOperation } from "@teilen-sql/change.ts";
+import { SqliteColumnInfo } from "@teilen-sql/sqlitedb.ts";
 
 type Props = {
 
@@ -31,9 +32,12 @@ export const TableViewer = ({ }: Props) => {
     const [st, setSt] = useState<string | undefined>(undefined);
     const [orderBy, setOrderBy] = useState({});
 
+    const [editingColumn, setEditingColumn] = useState<{ rowIndex: number, colIndex: number } | undefined>(undefined);
+    const [editingColumnValue, setEditingColumnValue] = useState("");
+    const [editingColumnCursorPosition, setEditingColumnCursorPosition] = useState(-1); // :InputCursorReset @Hack - We remember the cursor position within the input field as the cursor position is reset when we do a re-run of the table query.
+
     const [sqlEditorOpen, setSqlEditorOpen] = useState(false);
-    const [sqlEditorResults, setSqlEditorResults] = useState<{columns: any[], rows: any[]} | undefined>(undefined);
-    const [sqlEditorError, setSqlEditorError] = useState<any | undefined>(undefined);
+    const [sqlEditorResults, setSqlEditorResults] = useState<{ columns: any[], rows: any[] } | undefined>(undefined);
 
     const orderByString = (orderBy) => {
         if (orderBy[st] === undefined) return '';
@@ -43,7 +47,7 @@ export const TableViewer = ({ }: Props) => {
     const { data: tables, isLoading: loadingTables } = useQuery<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, [], { once: false });
     const { data: rows } = useQuery<any[]>(`SELECT rowid, * FROM "${st}" ${orderByString(orderBy)} LIMIT 300`, [], { fireIf: st !== undefined, dependencies: [] });
     const { data: rowCount } = useQuery<{ count: number }>(`SELECT COUNT(*) AS count FROM "${st}"`, [], { fireIf: st !== undefined, first: true, dependencies: [] });
-    const { data: columns } = useQuery(`PRAGMA table_info('${st}')`, [], { fireIf: st !== undefined });
+    const { data: columns } = useQuery<SqliteColumnInfo[]>(`PRAGMA table_info('${st}')`, [], { fireIf: st !== undefined });
 
     useEffect(() => {
         if (!loadingTables) {
@@ -58,31 +62,27 @@ export const TableViewer = ({ }: Props) => {
                 setShow(prev => !prev);
                 handled = true;
             }
-            if (selectedItems && e.key === 'Backspace') {
-                handleDeleteItems();
-                handled = true;
-            }
-            if (e.key === 'Escape') {
-                deselectAll();
-                handled = true;
-            }
-            if (e.metaKey && e.key === 'a') {
-                selectAll();
-                handled = true;
-            }
-            if (e.ctrlKey && e.key === 's') {
-                setSqlEditorOpen(prev => !prev);
-                handled = true;
-            }
-            if (e.ctrlKey && e.key === 'f') {
-                if (!fullscreen) {
-                    setFullscreen("Y");
-                    localStorage.setItem("tw_fullscreen", "Y");
-                } else {
-                    setFullscreen("");
-                    localStorage.setItem("tw_fullscreen", "");
+            if (show) {
+                if (selectedItems && e.key === 'Backspace') {
+                    handleDeleteItems();
+                    handled = true;
                 }
-                handled = true;
+                if (e.key === 'Escape') {
+                    deselectAll();
+                    handled = true;
+                }
+                if (e.metaKey && e.key === 'a') {
+                    selectAll();
+                    handled = true;
+                }
+                if (e.ctrlKey && e.key === 's') {
+                    setSqlEditorOpen(prev => !prev);
+                    handled = true;
+                }
+                if (e.ctrlKey && e.key === 'f') {
+                    toggleFullscreen();
+                    handled = true;
+                }
             }
 
             if (handled) {
@@ -96,9 +96,28 @@ export const TableViewer = ({ }: Props) => {
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
-    }, [selectedItems, fullscreen]);
+    }, [selectedItems, show, fullscreen]);
 
-    const onSqlEditorResults = (rows: any[]) : void => {
+    useEffect(() => {
+        // :InputCursorReset
+        const input = document.getElementById("tw_input_col_value");
+        if (input) {
+            input.selectionStart = editingColumnCursorPosition;
+            input.selectionEnd = editingColumnCursorPosition;
+        }
+    }, [editingColumnCursorPosition])
+
+    const toggleFullscreen = () => {
+        if (!fullscreen) {
+            setFullscreen("Y");
+            localStorage.setItem("tw_fullscreen", "Y");
+        } else {
+            setFullscreen("");
+            localStorage.setItem("tw_fullscreen", "");
+        }
+    }
+
+    const onSqlEditorResults = (rows: any[]): void => {
         if (rows.length === 0) return;
         const columns = Object.keys(rows[0]);
         setSqlEditorResults({ columns, rows });
@@ -151,6 +170,7 @@ export const TableViewer = ({ }: Props) => {
     const deselectAll = () => {
         setSelectedItems(undefined);
         setTableRightClicked(undefined);
+        setEditingColumn(undefined);
     }
 
     const isSelected = (type: 'table' | 'row', index: string) => {
@@ -195,6 +215,36 @@ export const TableViewer = ({ }: Props) => {
                 setSelectedItems({ type: 'row', items: [rowIndex] });
             }
         }
+        setEditingColumn(undefined);
+    }
+
+    const beginEditColumnValue = (rowIndex: number, colIndex: number) => {
+        const row = rows[rowIndex];
+        const colName = Object.keys(row)[colIndex + 1]; // +1 to skip rowid
+        const existingValue = row[colName];
+
+        setEditingColumn({ rowIndex, colIndex });
+        setEditingColumnValue(existingValue);
+        setSelectedItems(undefined);
+    }
+
+    const onColumnValueChange = async (e: ChangeEvent) => {
+        const value = e.target.value;
+        const cursorPos = e.target.selectionStart;
+
+        if (editingColumn === undefined || st === undefined) return;
+        const rowIndex = editingColumn.rowIndex;
+        const colIndex = editingColumn.colIndex;
+
+        const tblName = st;
+        const row = rows[rowIndex];
+        const rowId = row["rowid"];
+        const colName = Object.keys(row)[colIndex + 1]; // +1 to skip rowid
+
+        await db.exec(`UPDATE "${tblName}" SET ${colName} = ? WHERE rowid = ?`, [value, rowId]);
+
+        setEditingColumnValue(value);
+        setEditingColumnCursorPosition(cursorPos);
     }
 
     const rowValues = (row) => {
@@ -202,7 +252,14 @@ export const TableViewer = ({ }: Props) => {
         return Object.values(rest);
     }
 
-    const { XIcon, Table, ChevronUp, ChevronDown } = useIcon();
+    const isEditingColumn = (rowIndex: number, colIndex: number) => {
+        if (editingColumn === undefined) return false;
+        if (editingColumn.rowIndex !== rowIndex) return false;
+        if (editingColumn.colIndex !== colIndex) return false;
+        return true;
+    }
+
+    const { XIcon, Table, ChevronUp, ChevronDown, OpenFullscreen, CloseFullscreen } = useIcon();
 
     const height = fullscreen ? "h-full" : "h-96"
 
@@ -211,8 +268,25 @@ export const TableViewer = ({ }: Props) => {
         <>
             <TableDropdown tables={tables} event={tableRightClicked} />
             <div className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`} onClick={deselectAll}>
-                <header className="flex justify-end bg-gray-200">
-                    <XIcon onClick={() => setShow(false)} className="w-8 h-8 fill-gray-500" />
+                <header className="flex p-1 justify-between items-center bg-gray-300 border-b border-gray-400">
+                    <div>
+                        <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Open SQL Editor (ctrl+s)">
+                            <p className="text-sm font-medium">SQL</p>
+                        </button>
+                    </div>
+                    <div className="flex space-x-2 items-center">
+                        { fullscreen && (
+                            <button className="cursor-default" onClick={toggleFullscreen} title="Close fullscreen (ctrl+f)">
+                                <CloseFullscreen className="w-6 h-6 fill-gray-500" />
+                            </button>
+                        )}
+                        {!fullscreen && (
+                            <button className="cursor-default" onClick={toggleFullscreen} title="Open fullscreen (ctrl+f)">
+                                <OpenFullscreen className="w-6 h-6 fill-gray-500" />
+                            </button>
+                        )}
+                        <button className="cursor-default" onClick={() => setShow(false)} title="Close (ctrl+d)"><XIcon className="w-8 h-8 fill-gray-500"/></button>
+                    </div>
                 </header>
                 <div className="relative flex h-full w-full">
                     <section className="bg-gray-300 p-2">
@@ -258,14 +332,34 @@ export const TableViewer = ({ }: Props) => {
                                     ))}
                                 </tr>
                             </thead>
-                            <tbody className="select-none">
-                                {mode === 'data' && rows && rows.map((row, i) => (
+                            <tbody className="">
+                                {mode === 'data' && rows && rows.map((row, rowIndex) => (
                                     <tr
-                                        onClick={(e) => handleClickRow(e, i)}
-                                        key={i}
-                                        className={twMerge(`flex-1 h-8 truncate overflow-scroll ${i % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'} ${isSelected('row', i) && 'bg-blue-400 text-white'}`)}
+                                        key={rowIndex}
+                                        className={twMerge(`flex-1 h-8 truncate overflow-scroll ${rowIndex % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'} ${isSelected('row', rowIndex) && 'bg-blue-400 text-white'}`)}
+                                        onClick={(e) => handleClickRow(e, rowIndex)}
                                     >
-                                        {rowValues(row).map((v: any, i) => <td key={i} className="border-r border-gray-50">{v}</td>)}
+                                        {rowValues(row).map((v: any, colIndex) => (
+                                            <td key={colIndex}>
+                                                {isEditingColumn(rowIndex, colIndex) && (
+                                                    <input
+                                                        id="tw_input_col_value"
+                                                        className="w-full border-r border-gray-50"
+                                                        type="text"
+                                                        name="col_value"
+                                                        value={editingColumnValue}
+                                                        onChange={onColumnValueChange}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        autoFocus
+                                                    />
+                                                )}
+                                                {!isEditingColumn(rowIndex, colIndex) && (
+                                                    <p className="border-r border-gray-50" onDoubleClick={() => beginEditColumnValue(rowIndex, colIndex)}>
+                                                        {v}
+                                                    </p>
+                                                )}
+                                            </td>
+                                        ))}
                                     </tr>
                                 ))}
                                 {mode === 'structure' && columns && columns.map((col, i) => (
@@ -280,7 +374,7 @@ export const TableViewer = ({ }: Props) => {
                                 ))}
                             </tbody>
                         </table>
-                        <footer className="absolute bottom-8 py-2 mb-0 bg-gray-300 w-full">
+                        <footer className="absolute bottom-8 pt-2 pb-4 mb-0 bg-gray-300 w-full">
                             <div className="flex justify-between">
                                 <div className="flex space-x-2">
                                     <p onClick={() => setMode('data')} className={`px-4 ${mode === 'data' && 'bg-gray-100'}`}>Data</p>
@@ -289,7 +383,7 @@ export const TableViewer = ({ }: Props) => {
 
                                 {(mode === 'data' || mode === 'structure') && <p className="text-gray-600">{rowCount?.count ?? 0} rows</p>}
                                 {mode === 'query' && <p className="text-gray-600">{sqlEditorResults?.rows.length ?? 0} rows</p>}
-                                
+
                                 <p></p>
                                 <p></p>
                             </div>
@@ -308,7 +402,7 @@ type SqlEditorProps = {
     onResults: (rows: any[]) => void
 }
 
-const SqlEditor = ({ isOpen, onResults } : SqlEditorProps) => {
+const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
     const db = useDB();
 
     const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
@@ -337,22 +431,22 @@ const SqlEditor = ({ isOpen, onResults } : SqlEditorProps) => {
     }, [sql]);
 
     const runSql = async (sql: string) => {
-        console.log(sql);
-        
         const operation = sqlDetermineOperation(sql);
         if (operation === 'select' || operation === 'pragma') {
-            const {data, error} = await db.selectWithError(sql, []);
+            const { data, error } = await db.selectWithError(sql, []);
             if (error) {
-                console.log(error.message);
                 setSqlError(error.message);
             } else {
                 onResults(data as any[]);
+                setSqlError(undefined);
             }
         } else {
             const err = await db.exec(sql, []);
             if (err) {
                 setSqlError(err.message);
-            };
+            } else {
+                setSqlError(undefined);
+            }
         }
     }
 
@@ -360,7 +454,6 @@ const SqlEditor = ({ isOpen, onResults } : SqlEditorProps) => {
         const numLines = e.target.value.split("\n").length;
         setLineCount(numLines);
         setSql(e.target.value);
-        setSqlError(undefined);
         localStorage.setItem("tw_sql_editor_query", e.target.value);
     }
 
@@ -382,8 +475,8 @@ const SqlEditor = ({ isOpen, onResults } : SqlEditorProps) => {
             )}
             <div className="flex w-full h-full space-x-2">
                 <div className="flex flex-col">
-                    {Array.from({length: lineCount}).map((_, i) => (
-                        <p key={i} className="w-4 text-gray-400 select-none">{i+1}</p>
+                    {Array.from({ length: lineCount }).map((_, i) => (
+                        <p key={i} className="w-4 text-gray-400 select-none">{i + 1}</p>
                     ))}
                 </div>
                 <textarea
