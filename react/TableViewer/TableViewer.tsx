@@ -394,7 +394,7 @@ export const TableViewer = () => {
                         </footer>
                     </div>
 
-                    <SqlEditor isOpen={sqlEditorOpen} onResults={onSqlEditorResults} />
+                    <SqlEditor isOpen={sqlEditorOpen} fullscreen={fullscreen} onResults={onSqlEditorResults} />
                 </div>
             </div>
         </>
@@ -409,10 +409,11 @@ import { githubLight } from "@uiw/codemirror-theme-github";
 
 type SqlEditorProps = {
     isOpen: boolean
+    fullscreen: boolean
     onResults: (rows: any[]) => void
 }
 
-const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
+const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
     const db = useDB();
 
     const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
@@ -475,7 +476,7 @@ const SqlEditor = ({ isOpen, onResults }: SqlEditorProps) => {
                     noCompletions,
                     customKeymap,
                 ]}
-                className=" outline-none"
+                height={fullscreen ? "91vh" : "296px"}
                 theme={githubLight}
                 autoFocus={true}
             />
