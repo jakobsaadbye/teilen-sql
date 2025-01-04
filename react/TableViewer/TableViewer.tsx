@@ -1,5 +1,3 @@
-import React from 'react';
-
 import { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { twMerge } from "tailwind-merge";
@@ -29,6 +27,8 @@ export const TableViewer = () => {
     const db = useDB();
 
     const [show, setShow] = useState(false);
+    const [focused, setFocused] = useState(true);
+    const [resultTableFocused, setResultTableFocused] = useState(true);
     const [mode, setMode] = useState<'data' | 'structure' | 'query'>('data');
     const [fullscreen, setFullscreen] = useState(localStorage.getItem("tw_fullscreen") ?? "");
     const [selectedItems, setSelectedItems] = useState<SelectedItems>(undefined);
@@ -66,16 +66,23 @@ export const TableViewer = () => {
                 setShow(prev => !prev);
                 handled = true;
             }
-            if (show) {
-                if (selectedItems && e.key === 'Backspace') {
-                    handleDeleteItems();
-                    handled = true;
+            else if (show && focused) {
+                if (e.key === 'Backspace' && selectedItems) {
+                    if (selectedItems.type === 'row') {
+                        if (resultTableFocused) {
+                            handleDeleteItems();
+                            handled = true;
+                        }
+                    } else {
+                        handleDeleteItems();
+                        handled = true;
+                    }
                 }
                 if (e.key === 'Escape') {
                     deselectAll();
                     handled = true;
                 }
-                if (e.metaKey && e.key === 'a') {
+                if (e.metaKey && e.key === 'a' && !editingColumn && resultTableFocused) {
                     selectAll();
                     handled = true;
                 }
@@ -100,7 +107,7 @@ export const TableViewer = () => {
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
-    }, [selectedItems, show, fullscreen]);
+    }, [selectedItems, show, focused, resultTableFocused, fullscreen]);
 
     useEffect(() => {
         // :InputCursorReset
@@ -263,15 +270,19 @@ export const TableViewer = () => {
         return true;
     }
 
-    // const { XIcon, Table, ChevronUp, ChevronDown, OpenFullscreen, CloseFullscreen } = useIcon();
-
     const height = fullscreen ? "h-full" : "h-96"
 
     if (!show) return <></>
     return (
         <>
             <TableDropdown tables={tables} event={tableRightClicked} />
-            <div className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`} onClick={deselectAll}>
+            <div 
+                className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip focus:outline-red-500`}
+                tabIndex={0}
+                onClick={deselectAll} 
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+            >
                 <header className="flex p-1 justify-between items-center bg-gray-300 border-b border-gray-400">
                     <div>
                         <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Open SQL Editor (ctrl+s)">
@@ -312,7 +323,7 @@ export const TableViewer = () => {
                         </ul>
                     </section>
                     <div className="h-full w-full overflow-y-auto bg-white">
-                        <table className="flex-1 w-full bg-white mb-32">
+                        <table className="flex-1 w-full bg-white mb-32" tabIndex={0} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
                             <thead className="flex-1 bg-gray-200 sticky top-0 w-full">
                                 <tr className="w-full">
                                     {mode === 'data' && columns && (columns.map((c, i) => (
@@ -421,11 +432,17 @@ const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
 
     const runSql = async (sql: string) => {
         const operation = sqlDetermineOperation(sql);
-        if (operation === 'select' || operation === 'pragma') {
+        if (operation === 'select' || operation === 'pragma' || operation === 'explain') {
             const { data, error } = await db.selectWithError(sql, []);
             if (error) {
+                console.log(error);
                 setSqlError(error.message);
-            } else {
+            } else if (data.length === 0) {
+                // @Improvement - Would be nice if we would still return an empty set of results. The reason
+                // we don't is that we are basing the columns on the results. We could use the EXPLAIN keyword to get what columns are mapped.
+                setSqlError("No results");
+            }
+            else {
                 onResults(data as any[]);
                 setSqlError(undefined);
             }
@@ -460,6 +477,14 @@ const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
         ],
     });
 
+    const editorHeight = () => { // @Hack - this is super hacky. Would wish that the height could just be 100%, but codeMirror says no. sigh...
+        if (sqlError) {
+            return fullscreen ? "88vh" : "270px"
+        } else {
+            return fullscreen ? "91vh" : "296px"
+        }
+    }
+
     if (!isOpen) return <></>
     return (
         <div className="w-full p-1 border-l-4 border-gray-300">
@@ -476,7 +501,7 @@ const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
                     noCompletions,
                     customKeymap,
                 ]}
-                height={fullscreen ? "91vh" : "296px"}
+                height={editorHeight()}
                 theme={githubLight}
                 autoFocus={true}
             />
