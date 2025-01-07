@@ -95,7 +95,7 @@ export class SqliteDB {
                 });
             });
 
-            const changeSet = await this.getChangesetFromUpdate(change);
+            const changeSet = await this.getChangeSetFromUpdate(change);
             await saveFractionalIndexCols(this, changeSet);
 
             const err = await saveChanges(this, changeSet);
@@ -103,7 +103,7 @@ export class SqliteDB {
             await this.exec(`COMMIT;`, [], { notify: false });
 
             // @Incomplete - A delete might cascade over multiple tables, so only notifying hooks of the deleted row is not sufficient.
-            // We should get all the table names that are affeected by the delete
+            // We should get all the table names that are affected by the delete
             this.#channelTableChange.postMessage(tblName);
             this.#channelTableChange.postMessage("crr_changes");
             return err;
@@ -180,7 +180,7 @@ export class SqliteDB {
         return fk
     }
 
-    private async getChangesetFromUpdate(change: SqliteUpdateHookChange): Promise<Change[]> {
+    private async getChangeSetFromUpdate(change: SqliteUpdateHookChange): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -191,12 +191,12 @@ export class SqliteDB {
 
                 const rowId = row["rowid"];
                 const pk = pkEncodingOfRow(this, change.tableName, row);
-                const created_at = (new Date()).getTime();
+                const now = (new Date()).getTime();
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     if (key === "rowid") continue;
-                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0 });
+                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
                 }
                 return changeSet;
             }
@@ -226,22 +226,26 @@ export class SqliteDB {
                 };
 
                 const { rowid, ...row } = result;
-                const pk = pkEncodingOfRow(this, change.tableName, row);
-
-                const lastVersionOfRow = await reconstructRowFromHistory(this, change.tableName, pk);
                 if (row === undefined) {
                     console.error(`No version of row exists with the current changes`);
                     return [];
                 };
 
+                const pk = pkEncodingOfRow(this, change.tableName, row);
+                const lastVersionOfRow = await reconstructRowFromHistory(this, change.tableName, pk);
+                if (lastVersionOfRow === undefined || Object.keys(lastVersionOfRow).length === 0) {
+                    console.log(`No prior changes was found for row with pk ${pk} in table ${change.tableName} while receiving a new update in getChangesetFromUpdate()`);
+                    return [];
+                }
+
                 const rowId = rowid;
-                const created_at = (new Date()).getTime();
+                const now = (new Date()).getTime();
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     const lastValue = lastVersionOfRow[key];
                     if (value !== lastValue) {
-                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at, applied_at: 0 })
+                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 })
                     }
                 }
 

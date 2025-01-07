@@ -80,7 +80,6 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             const pk = insert[0].pk;
             const row = await db.first<{ rowid: bigint }>(`SELECT rowid FROM "${tblName}" WHERE ${pkEqual(db, tblName, pk)}`, []);
             if (row === undefined) return Error(`Failed to get just inserted row`);
-
             err = await db.exec(`UPDATE "crr_changes" SET row_id = ? WHERE tbl_name = ? AND pk = ?`, [row.rowid, tblName, pk]);
             if (err) { console.error(err); return err; }
         }
@@ -214,7 +213,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     // Patch any fractional index columns that might have collided. 
     // NOTE(*important*): Must run after all the changes have been applied 
     // so that all rows are known about
-    await fixAnyFractionalIndexCollisions(db, getChangeSets(changes));
+    await fixFractionalIndexCollisions(db, getChangeSets(changes));
 
     await updateLastPulledAtFromPeers(db, changes);
 
@@ -542,7 +541,7 @@ const getLatestFkChanges = async (db: SqliteDB, tblName: string, pk: string, fkC
     `, [tblName, pk, ...fkCols, ...fkCols]);
 }
 
-const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]) => {
+const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]) => {
     const fiChanges = changes.filter(changeSet => {
         const tblName = changeSet[0].tbl_name;
         const fiCols = db.crrColumns[tblName].filter(col => col.type === 'fractional_index');
@@ -591,7 +590,6 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
         else tables[tblName] = { [parentId]: { parentColId, parentId, posColId } };
     }
 
-    const patchStmts = [];
     for (const [tblName, lists] of Object.entries(tables)) {
         for (const list of Object.values(lists)) {
             const parentColId = list.parentColId;
@@ -659,18 +657,21 @@ const fixAnyFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]
 
                     for (let i = 0; i < sorted.length; i++) {
                         const [idx, item] = sorted[i];
-                        const stmt = `UPDATE "${tblName}" SET ${posColId} = '${item[posColId]}' WHERE ${pkEqual(db, tblName, itemPks[idx])}`;
-                        patchStmts.push(stmt);
+                        const pk = itemPks[idx];
+                        const posValue = item[posColId];
+                        let err = await db.exec(`UPDATE "${tblName}" SET ${posColId} = ? WHERE ${pkEqual(db, tblName, pk)}`, [posValue]);
+                        if (err) {
+                            console.error(`Failed to update fractional index position in ${tblName} after collision`, err);
+                            continue;
+                        }
+                        err = await db.exec(`UPDATE "crr_changes" SET value = ? WHERE tbl_name = ? AND pk = ? AND col_id = ?`, [posValue, tblName, pk, posColId]);
+                        if (err) {
+                            console.error(`Failed to update fractional index position in crr_changes after a collision`, err);
+                            continue;
+                        }
                     }
                 }
             }
-        }
-    }
-
-    for (const stmt of patchStmts) {
-        const err = await db.exec(stmt, []);
-        if (err !== undefined) {
-            console.error(`Error running ${stmt}`, err);
         }
     }
 }
@@ -701,9 +702,12 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
 
     const changedCols = changes.map(c => c.col_id);
     const fiCols = db.crrColumns[tblName].filter(col => col.tbl_name === tblName && col.type === 'fractional_index');
+    if (fiCols.length === 0) return; // Table doesn't have a fractional index column
     const fiCol = fiCols.find(col => changedCols.includes(col.col_id));
-    if (fiCol === undefined) return; // Table doesn't have a fractional index column
+    if (fiCol === undefined) return; // No change to a fraction index column
 
+    console.log(changes);
+    
     const fiChangeIdx = changes.findIndex(c => c.col_id === fiCol.col_id);
     if (fiChangeIdx === -1) return;
 
