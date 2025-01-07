@@ -21,7 +21,7 @@ type Action =
     | "updateColumnTitle"
 
 const rngActions = [
-    // ["pullChanges", 0.40],
+    ["pullChanges", 0.40],
     ["pushChanges", 0.40],
     ["addTodo", 0.80],
     ["addColumn", 0.40],
@@ -61,7 +61,7 @@ export const useGoBananas = (boardId?: string) => {
             console.log(action);
             
             switch (action) {
-                // case 'pullChanges': { await pullChanges(syncer); break; }
+                case 'pullChanges': { await pullChanges(syncer); break; }
                 case 'pushChanges': { await pushChanges(syncer); break; }
                 case 'addColumn': { await addColumn(db, boardId); break; }
                 case 'addTodo': { await addTodo(db, boardId); break; }
@@ -145,7 +145,6 @@ const removeTodo = async (db: SqliteDB, boardId: string) => {
     const todoIds = rows.map(row => row.id);
     const randomId = pickRandom(todoIds);
 
-    console.log(randomId);
     await BoardRepo.deleteTodo(db, randomId);
 }
 

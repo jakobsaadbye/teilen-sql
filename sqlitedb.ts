@@ -1,5 +1,5 @@
 import { ms } from "./ms.ts"
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, getRelatedChanges } from "./change.ts";
 import { insertTablesStmt } from "./tables.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
@@ -77,7 +77,7 @@ export class SqliteDB {
             this.#channelTableChange.postMessage(tblName);
         };
         if (data.error) {
-            console.error(`Failed executing`, sql, params);
+            console.error(`Failed executing`, sql, params, data.error);
         }
         return data.error as Error | undefined;
     }
@@ -86,6 +86,7 @@ export class SqliteDB {
         try {
             const tblName = sqlExplainExec(sql);
 
+            await this.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
             const updateHook = new BroadcastChannel("update_hook");
             this.exec(sql, params, { notify: false });
             const change: SqliteUpdateHookChange = await new Promise(resolve => {
@@ -99,7 +100,10 @@ export class SqliteDB {
 
             const err = await saveChanges(this, changeSet);
             await compactChanges(this, changeSet);
+            await this.exec(`COMMIT;`, [], { notify: false });
 
+            // @Incomplete - A delete might cascade over multiple tables, so only notifying hooks of the deleted row is not sufficient.
+            // We should get all the table names that are affeected by the delete
             this.#channelTableChange.postMessage(tblName);
             this.#channelTableChange.postMessage("crr_changes");
             return err;
@@ -197,17 +201,22 @@ export class SqliteDB {
                 return changeSet;
             }
             case "delete": {
-                const rowChange = await this.first<Change | undefined>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND row_id = ? ORDER BY created_at DESC`, [change.tableName, change.rowid]);
+                // Look for a previous insert to get what primary-key we are deleting as we can't rely on rowids generated from sqlite
+                const rowChange = await this.first<Change>(`
+                    SELECT * FROM "crr_changes" 
+                    WHERE type = 'insert' AND tbl_name = ? AND row_id = ? 
+                    ORDER BY created_at DESC
+                `, [change.tableName, change.rowid]);
                 if (rowChange === undefined) {
                     console.error(`No previous change was found to row before delete`);
                     return [];
                 }
 
+                const tblName = rowChange.tbl_name;
                 const pk = rowChange.pk;
-                const rowId = rowChange.row_id;
-                const created_at = (new Date()).getTime();
-
-                return [{ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: null, pk, value: null, site_id: this.siteId, created_at, applied_at: 0 }];
+                const now = (new Date()).getTime();
+                
+                return [{ row_id: change.rowid, type: 'delete', tbl_name: tblName, col_id: null, pk, value: null, site_id: this.siteId, created_at: now, applied_at: 0 }];
             };
             case "update": {
                 const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);

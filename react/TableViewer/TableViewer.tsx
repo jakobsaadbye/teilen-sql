@@ -277,7 +277,7 @@ export const TableViewer = () => {
         <>
             <TableDropdown tables={tables} event={tableRightClicked} />
             <div 
-                className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip focus:outline-red-500`}
+                className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`}
                 tabIndex={0}
                 onClick={deselectAll} 
                 onFocus={() => setFocused(true)}
