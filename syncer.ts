@@ -46,7 +46,7 @@ export class Syncer {
         if (!client) return;
 
         const lastPushedAt = client.last_pushed_at;
-        const changes = await this.#db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ?`, [lastPushedAt, this.#db.siteId]);
+        const changes = await this.#db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at`, [lastPushedAt, this.#db.siteId]);
 
         console.log(`Changes to push`, changes);
 

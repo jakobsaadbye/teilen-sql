@@ -323,7 +323,7 @@ export const TableViewer = () => {
                         </ul>
                     </section>
                     <div className="h-full w-full overflow-y-auto bg-white">
-                        <table className="flex-1 w-full bg-white mb-32" tabIndex={0} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
+                        <table className="flex-1 w-full bg-white mb-32 focus:outline-none" tabIndex={0} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
                             <thead className="flex-1 bg-gray-200 sticky top-0 w-full">
                                 <tr className="w-full">
                                     {mode === 'data' && columns && (columns.map((c, i) => (

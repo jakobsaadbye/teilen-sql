@@ -106,7 +106,7 @@ const moveTodo = async (db: SqliteDB, boardId: string) => {
     const randomCol = pickRandom(columns);
     const randomTodo = pickRandom(todos);
 
-    const prependOrAppend = pickRandom(["-1", "1"])
+    const prependOrAppend = pickRandom(["-1", "1"]);
     await BoardRepo.saveTodo(db, { ...randomTodo, column_id: randomCol.id, position: prependOrAppend });
 }
 

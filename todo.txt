@@ -1,1 +1,3 @@
-    
+TODO:
+    - Rowid mismatch. Something with the remapping of rowids is not being done correctly 
+      leading to missing deletes as they rely on correct rowids

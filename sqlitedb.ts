@@ -88,11 +88,11 @@ export class SqliteDB {
 
             await this.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
             const updateHook = new BroadcastChannel("update_hook");
-            this.exec(sql, params, { notify: false });
-            const change: SqliteUpdateHookChange = await new Promise(resolve => {
+            const change: SqliteUpdateHookChange = await new Promise((resolve, reject) => {
                 updateHook.addEventListener('message', (event) => {
                     resolve(event.data);
                 });
+                this.exec(sql, params, { notify: false }).catch(err => reject(err));
             });
 
             const changeSet = await this.getChangeSetFromUpdate(change);
@@ -108,6 +108,7 @@ export class SqliteDB {
             this.#channelTableChange.postMessage("crr_changes");
             return err;
         } catch (e) {
+            console.error(e);
             return e;
         }
     }
@@ -216,7 +217,7 @@ export class SqliteDB {
                 const pk = rowChange.pk;
                 const now = (new Date()).getTime();
                 
-                return [{ row_id: change.rowid, type: 'delete', tbl_name: tblName, col_id: null, pk, value: null, site_id: this.siteId, created_at: now, applied_at: 0 }];
+                return [{ row_id: change.rowid, type: 'delete', tbl_name: tblName, col_id: null, pk, value: 0, site_id: this.siteId, created_at: now, applied_at: 0 }];
             };
             case "update": {
                 const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -245,7 +246,17 @@ export class SqliteDB {
                 for (const [key, value] of Object.entries(row)) {
                     const lastValue = lastVersionOfRow[key];
                     if (value !== lastValue) {
-                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 })
+                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
+
+                        // @Temporary - If there is an update to the foreign-key, also update the original insert change
+                        // @Improvement - We might in the future have a structure such that each column of a row
+                        // only has 1 associated change row. Then there couldn't be another change to the foreign-key
+                        const fkCols = this.crrColumns[change.tableName].filter(col => col.fk);
+                        if (fkCols.length === 0) continue;
+                        const fkCol = fkCols.find(col => col.col_id === key);
+                        if (fkCol) {
+                            await this.exec(`UPDATE "crr_changes" SET value = ? WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND col_id = ?`, [value, change.tableName, pk, fkCol.col_id]);
+                        }
                     }
                 }
 
