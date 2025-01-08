@@ -438,8 +438,8 @@ const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
                 console.log(error);
                 setSqlError(error.message);
             } else if (data.length === 0) {
-                // @Improvement - Would be nice if we would still return an empty set of results. The reason
-                // we don't is that we are basing the columns on the results. We could use the EXPLAIN keyword to get what columns are mapped.
+                // @Improvement - Would be nice if we would still return an empty set of results with column headers. The reason
+                // we can't is that we are basing the columns on the results. We could use the EXPLAIN keyword to get what columns are mapped.
                 setSqlError("No results");
             }
             else {
