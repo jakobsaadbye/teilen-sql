@@ -1,6 +1,7 @@
 import { ms } from "./ms.ts"
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, getRelatedChanges } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, getRelatedChanges, sqlDetermineOperation, sqlAsSelectStmt } from "./change.ts";
 import { insertTablesStmt } from "./tables.ts";
+import { assert } from "jsr:@std/assert@0.217/assert";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -20,8 +21,7 @@ export type SqliteColumnInfo = {
     type: string
 }
 
-
-export type ForeignKey = {
+export type SqliteForeignKey = {
     table: string
     from: string
     to: string
@@ -82,9 +82,26 @@ export class SqliteDB {
         return data.error as Error | undefined;
     }
 
+    async execOrThrow(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
+        const err = await this.exec(sql, params, options);
+        if (err) throw err;
+    }
+
     async execTrackChanges(sql: string, params: any[]) {
         try {
             const tblName = sqlExplainExec(sql);
+            const operation = sqlDetermineOperation(sql);
+
+            const deleteRowidToPk: {[rowid: string] : string} = {};
+            if (operation === 'delete') {
+                // Turn the delete stmt into a select stmt to get which rows are being affected.
+                const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
+                const rows = await this.select<{rowid: bigint}[]>(deleteAsSelectQuery, params);
+                for (const row of rows) {
+                    const pk = pkEncodingOfRow(this, tblName, row);
+                    deleteRowidToPk['' + row.rowid] = pk;
+                }
+            }
 
             await this.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
             const updateHook = new BroadcastChannel("update_hook");
@@ -95,10 +112,10 @@ export class SqliteDB {
                 this.exec(sql, params, { notify: false }).catch(err => reject(err));
             });
 
-            const changeSet = await this.getChangeSetFromUpdate(change);
+            const changeSet = await this.getChangeSetFromUpdate(change, deleteRowidToPk);
             await saveFractionalIndexCols(this, changeSet);
 
-            const err = await saveChanges(this, changeSet);
+            await saveChanges(this, changeSet);
             await compactChanges(this, changeSet);
             await this.exec(`COMMIT;`, [], { notify: false });
 
@@ -106,7 +123,6 @@ export class SqliteDB {
             // We should get all the table names that are affected by the delete
             this.#channelTableChange.postMessage(tblName);
             this.#channelTableChange.postMessage("crr_changes");
-            return err;
         } catch (e) {
             console.error(e);
             return e;
@@ -147,7 +163,7 @@ export class SqliteDB {
     async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
         const dwaMs = ms(deleteWinsAfter);
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
-        const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
+        const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
             if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${dwaMs}', null)`;
@@ -175,13 +191,13 @@ export class SqliteDB {
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
     }
 
-    private fkOrNull(col: any, fks: ForeignKey[]): ForeignKey | null {
+    private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);
         if (fk === undefined) return null;
         return fk
     }
 
-    private async getChangeSetFromUpdate(change: SqliteUpdateHookChange): Promise<Change[]> {
+    private async getChangeSetFromUpdate(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -190,45 +206,30 @@ export class SqliteDB {
                     return [];
                 }
 
-                const rowId = row["rowid"];
                 const pk = pkEncodingOfRow(this, change.tableName, row);
                 const now = (new Date()).getTime();
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     if (key === "rowid") continue;
-                    changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
+                    changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
                 }
                 return changeSet;
             }
             case "delete": {
-                // Look for a previous insert to get what primary-key we are deleting as we can't rely on rowids generated from sqlite
-                const rowChange = await this.first<Change>(`
-                    SELECT * FROM "crr_changes" 
-                    WHERE type = 'insert' AND tbl_name = ? AND row_id = ? 
-                    ORDER BY created_at DESC
-                `, [change.tableName, change.rowid]);
-                if (rowChange === undefined) {
-                    console.error(`No previous change was found to row before delete`);
-                    return [];
-                }
-
-                const tblName = rowChange.tbl_name;
-                const pk = rowChange.pk;
+                const tblName = change.tableName;
                 const now = (new Date()).getTime();
                 
-                return [{ row_id: change.rowid, type: 'delete', tbl_name: tblName, col_id: null, pk, value: 0, site_id: this.siteId, created_at: now, applied_at: 0 }];
+                // We use the computed deleteRowidToPk mapping to lookup the primary-key that got deleted
+                const pk = deleteRowidToPk['' + change.rowid];
+                assert(pk);
+                
+                return [{ type: 'delete', tbl_name: tblName, col_id: null, pk, value: 0, site_id: this.siteId, created_at: now, applied_at: 0 }];
             };
             case "update": {
-                const result = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
-                if (result === undefined) {
-                    console.error(`No row was found for update`);
-                    return [];
-                };
-
-                const { rowid, ...row } = result;
+                const row = await this.first<any>(`SELECT * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
                 if (row === undefined) {
-                    console.error(`No version of row exists with the current changes`);
+                    console.error(`No row was found for update`);
                     return [];
                 };
 
@@ -239,17 +240,17 @@ export class SqliteDB {
                     return [];
                 }
 
-                const rowId = rowid;
                 const now = (new Date()).getTime();
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     const lastValue = lastVersionOfRow[key];
                     if (value !== lastValue) {
-                        changeSet.push({ row_id: rowId, type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
+                        changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
 
-                        // @Temporary - If there is an update to the foreign-key, also update the original insert change
-                        // @Improvement - We might in the future have a structure such that each column of a row
+                        // :ModifyForeignKeyInserts
+                        // @Temporary - If the update changes the foreign-key, also update the original insert change
+                        // NOTE: We might in the future have a structure such that each column of a row
                         // only has 1 associated change row. Then there couldn't be another change to the foreign-key
                         const fkCols = this.crrColumns[change.tableName].filter(col => col.fk);
                         if (fkCols.length === 0) continue;

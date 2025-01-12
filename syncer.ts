@@ -15,7 +15,7 @@ export class Syncer {
         if (!client) return;
 
         const url = new URL(this.#endpoint);
-        url.searchParams.append("lastPulledAt", client.last_pulled_at);
+        url.searchParams.append("lastPulledAt", '' + client.last_pulled_at);
         url.searchParams.append("siteId", client.site_id);
 
         try {
@@ -25,18 +25,17 @@ export class Syncer {
                 
                 const { changes, pulledAt } = data;
 
-                let err = await applyChanges(this.#db, changes);
-                if (err) return console.error(err);
+                await applyChanges(this.#db, changes);
                 
-                err = await this.#db.exec(`UPDATE "crr_clients" SET last_pulled_at = ? WHERE site_id = ?`, [pulledAt, this.#db.siteId]);
-                if (err !== undefined) console.error(err);
+                await this.#db.execOrThrow(`UPDATE "crr_clients" SET last_pulled_at = ? WHERE site_id = ?`, [pulledAt, this.#db.siteId]);
 
                 console.log(`Pulled ${changes.length} changes`);
             } else {
                 const data = await res.json();
-                console.error(`Failed to pull changes`, data.error);
+                console.error(`Failed to pull changes. Is the server running?`, data.error);
             }
         } catch (e) {
+            await this.#db.exec(`ROLLBACK`, []);
             console.error(`Failed to pull changes`, e);
         }
     }
@@ -46,7 +45,7 @@ export class Syncer {
         if (!client) return;
 
         const lastPushedAt = client.last_pushed_at;
-        const changes = await this.#db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at`, [lastPushedAt, this.#db.siteId]);
+        const changes = await this.#db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.#db.siteId]);
 
         console.log(`Changes to push`, changes);
 
@@ -69,7 +68,8 @@ export class Syncer {
                 const err = await this.#db.exec(`UPDATE "crr_clients" SET last_pushed_at = ? WHERE site_id = ?`, [new Date().getTime(), this.#db.siteId]);
                 if (err !== undefined) console.error(err);
             } else {
-                console.error(`Failed to push changes`, res.status);
+                const data = await res.json();
+                console.error(`Failed to push changes`, res.status, data);
             }
         } catch (e) {
             console.error(`Failed to push changes`, e);

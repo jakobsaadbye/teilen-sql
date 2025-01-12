@@ -2,7 +2,6 @@ export const insertTablesStmt = `
     BEGIN;
 
     CREATE TABLE IF NOT EXISTS crr_changes(
-        row_id bigint not null,
         type text not null,
         tbl_name text not null,
         col_id text,

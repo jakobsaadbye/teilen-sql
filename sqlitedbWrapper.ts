@@ -10,7 +10,7 @@
 
 import { Database } from "jsr:@db/sqlite@0.12";
 import { CrrColumn } from "./change.ts";
-import { ForeignKey } from "./sqlitedb.ts";
+import { SqliteForeignKey } from "./sqlitedb.ts";
 import { ms } from "./ms.ts";
 
 export class SqliteDBWrapper {
@@ -27,13 +27,18 @@ export class SqliteDBWrapper {
         this.finalizeUpgrades().catch(e => console.error(e));
     }
 
-    async exec(sql: string, params: any[]) {
+    async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         try {
             console.log(sql, params);
             this.#db.exec(sql, ...params);
         } catch (e) {
             return e;
         }
+    }
+
+    async execOrThrow(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
+        const err = await this.exec(sql, params, options);
+        if (err) throw err;
     }
 
     async first<T>(sql: string, params: any[]): Promise<T | undefined> {
@@ -57,7 +62,7 @@ export class SqliteDBWrapper {
     async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
         const deleteWinsAfterMs = ms(deleteWinsAfter);
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
-        const fks = await this.select<ForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
+        const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
             if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${deleteWinsAfterMs}', null)`;
@@ -85,7 +90,7 @@ export class SqliteDBWrapper {
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
     }
 
-    private fkOrNull(col: any, fks: ForeignKey[]): ForeignKey | null {
+    private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);
         if (fk === undefined) return null;
         return fk

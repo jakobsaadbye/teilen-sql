@@ -43,7 +43,7 @@ export const ControlBar = ({ boardId, className }: Props) => {
                 <ArrowUp className="w-6 h-6 fill-gray-600" />
             </button>
             <h2 className="text-2xl text-white font-semibold">{changeCount} changes</h2>
-            {boardId && !running && <button title="Go banannas" className="cursor-default" onClick={() => goBananas(15000)}><Rabbit className="w-12 h-12 fill-gray-200"/></button>}
+            {boardId && !running && <button title="Go banannas" className="cursor-default" onClick={() => goBananas(5000)}><Rabbit className="w-12 h-12 fill-gray-200"/></button>}
             {boardId && running && <Block className="w-12 h-12 fill-gray-200" onClick={cancel} />}
         </div>
     )

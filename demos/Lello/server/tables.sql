@@ -23,7 +23,6 @@ create table if not exists todos(
 );
 
 create table if not exists crr_changes(
-    row_id bigint not null,
     type text not null,
     tbl_name text not null,
     col_id text,

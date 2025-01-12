@@ -1656,7 +1656,6 @@
     "dependencies": [
       "npm:@codemirror/autocomplete@^6.18.4",
       "npm:@codemirror/lang-sql@^6.8.0",
-      "npm:@codemirror/state@^6.5.0",
       "npm:@codemirror/view@^6.36.1",
       "npm:@types/react@^19.0.2",
       "npm:@uiw/codemirror-theme-github@^4.23.7",
