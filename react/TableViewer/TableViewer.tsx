@@ -1,16 +1,16 @@
-import { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
+import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { twMerge } from "tailwind-merge";
 import { useDB, useQuery } from "../hooks.ts"
 import { sqlDetermineOperation } from "../../change.ts";
-import { SqliteColumnInfo } from "@/sqlitedb.ts";
+import type { SqliteColumnInfo } from "@/sqlitedb.ts";
 
-import XIcon from "./icons/x.svg?react";
-import TableIcon from "./icons/table.svg?react";
-import ChevronUp from "./icons/chevronUp.svg?react";
-import ChevronDown from "./icons/chevronDown.svg?react";
-import OpenFullscreen from "./icons/openFullscreen.svg?react";
-import CloseFullscreen from "./icons/closeFullscreen.svg?react";
+import XIcon from "./icons/X.tsx";
+import TableIcon from "./icons/Table.tsx";
+import ChevronUp from "./icons/ChevronUp.tsx";
+import ChevronDown from "./icons/ChevronDown.tsx";
+import OpenFullscreen from "./icons/OpenFullscreen.tsx";
+import CloseFullscreen from "./icons/CloseFullscreen.tsx";
 
 type SelectedItems = {
     type: 'table' | 'row'
@@ -276,10 +276,10 @@ export const TableViewer = () => {
     return (
         <>
             <TableDropdown tables={tables} event={tableRightClicked} />
-            <div 
+            <div
                 className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`}
                 tabIndex={0}
-                onClick={deselectAll} 
+                onClick={deselectAll}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
             >

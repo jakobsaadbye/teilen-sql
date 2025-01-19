@@ -1,7 +1,11 @@
 {
+  "name": "@jsaad/teilen-sql",
+  "version": "0.0.1",
+  "exports": "./react/mod.ts",
   "tasks" : {
         "test" : "deno run fracTest.ts"
   },
+  "license": "MIT",
   "nodeModulesDir": "auto",
   "imports": {
     "@/" : "./",
@@ -14,7 +18,8 @@
     "preact/": "https://esm.sh/preact@10.19.2/",
     "react": "npm:react@^19.0.0",
     "tailwind": "npm:tailwind@^4.0.0",
-    "tailwind-merge": "npm:tailwind-merge@^2.6.0"
+    "tailwind-merge": "npm:tailwind-merge@^2.6.0",
+    "vite-plugin-svgr": "npm:vite-plugin-svgr@^4.2.0"
   },
   "compilerOptions": {
     "jsx": "react-jsx",
