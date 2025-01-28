@@ -34,7 +34,7 @@ export const fracMid = (a: string, b: string, digits = BASE_52_DIGITS) => {
         if (i === a.length) {
             // We consumed all max digits, put in the final mid
             const mid = Math.round(maxValue / 2);
-            return maxes + mid;
+            return maxes + digits[mid];
         } else {
             // The end is some other value. Mid it with the max value
             const mid = Math.round((aValue + maxValue) / 2);

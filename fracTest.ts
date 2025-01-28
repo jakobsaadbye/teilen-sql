@@ -5,6 +5,7 @@ const main = () => {
     fracMidBase10();
     fracMidBase52();
     fracMidAppendOnly();
+    // appendOnly();
 }
 
 const fracMidBase10 = () => {
@@ -105,6 +106,16 @@ const fracMidAppendOnly = () => {
             console.log(`FAIL "${wanted}", "${given}"`);
         }
         i++;
+    }
+}
+
+const appendOnly = () => {
+    const iterations = 20;
+    let position = "A";
+    for (let i = 0; i < iterations; i++) {
+        const mid = fracMid(position, "]");
+        console.log(`(${position}, ]) -> (${mid}, ])`);
+        position = mid;
     }
 }
 
