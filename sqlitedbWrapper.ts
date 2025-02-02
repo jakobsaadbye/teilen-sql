@@ -29,7 +29,7 @@ export class SqliteDBWrapper {
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         try {
-            console.log(sql, params);
+            // console.log(sql, params);
             this.#db.exec(sql, ...params);
         } catch (e) {
             return e;
@@ -46,7 +46,7 @@ export class SqliteDBWrapper {
     }
 
     async select<T>(sql: string, params: any[]): Promise<T> {
-        console.log(sql, params);
+        // console.log(sql, params);
         return await this.#db.prepare(sql).all(...params) as T;
     }
 

@@ -58,7 +58,6 @@ export const useGoBananas = (boardId?: string) => {
             if (stop) return;
 
             const action = pickRandomAction(rngActions);
-            console.log(action);
             
             switch (action) {
                 case 'pullChanges': { await pullChanges(syncer); break; }

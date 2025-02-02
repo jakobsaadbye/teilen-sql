@@ -2,8 +2,13 @@ import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { twMerge } from "tailwind-merge";
 import { useDB, useQuery } from "../hooks.ts"
-import { sqlDetermineOperation } from "../../change.ts";
+
+import type { SelectedItems, RightClickTableEvent, RightClickDataEvent } from "./types.ts";
 import type { SqliteColumnInfo } from "@/sqlitedb.ts";
+
+import { TableDropdown } from "./components/TableDropdown.tsx";
+import { DataDropdown } from "./components/DataDropdown.tsx";
+import { SqlEditor } from "./components/SqlEditor.tsx";
 
 import XIcon from "./icons/X.tsx";
 import TableIcon from "./icons/Table.tsx";
@@ -12,16 +17,7 @@ import ChevronDown from "./icons/ChevronDown.tsx";
 import OpenFullscreen from "./icons/OpenFullscreen.tsx";
 import CloseFullscreen from "./icons/CloseFullscreen.tsx";
 
-type SelectedItems = {
-    type: 'table' | 'row'
-    items: number[]
-} | undefined
 
-type RightClickTableEvent = {
-    tableIndex: number
-    mouseX: number
-    mouseY: number
-} | undefined
 
 export const TableViewer = () => {
     const db = useDB();
@@ -32,7 +28,8 @@ export const TableViewer = () => {
     const [mode, setMode] = useState<'data' | 'structure' | 'query'>('data');
     const [fullscreen, setFullscreen] = useState(localStorage.getItem("tw_fullscreen") ?? "");
     const [selectedItems, setSelectedItems] = useState<SelectedItems>(undefined);
-    const [tableRightClicked, setTableRightClicked] = useState<RightClickTableEvent>(undefined);
+    const [tablesRightClicked, setTablesRightClicked] = useState<RightClickTableEvent>(undefined);
+    const [dataRightClicked, setDataRightClicked] = useState<RightClickDataEvent>(undefined);
     const [st, setSt] = useState<string | undefined>(undefined);
     const [orderBy, setOrderBy] = useState({});
 
@@ -41,15 +38,23 @@ export const TableViewer = () => {
     const [editingColumnCursorPosition, setEditingColumnCursorPosition] = useState(-1); // :InputCursorReset @Hack - We remember the cursor position within the input field as the cursor position is reset when we do a re-run of the table query.
 
     const [sqlEditorOpen, setSqlEditorOpen] = useState(false);
-    const [sqlEditorResults, setSqlEditorResults] = useState<{ columns: any[], rows: any[] } | undefined>(undefined);
+    const [sqlEditorResults, setSqlEditorResults] = useState<{ sql: string, columns: any[], rows: any[] } | undefined>(undefined);
 
     const orderByString = (orderBy) => {
         if (orderBy[st] === undefined) return '';
         return `ORDER BY ${orderBy[st].columnName} ${orderBy[st].direction}`;
     }
 
+    const currentQuery = () => {
+        return `SELECT rowid, * FROM "${st}" ${orderByString(orderBy)} LIMIT 300`;
+    }
+
+    const currentQueryNoRowid = () => {
+        return `SELECT * FROM "${st}" ${orderByString(orderBy)} LIMIT 300`;
+    }
+
     const { data: tables, isLoading: loadingTables } = useQuery<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, [], { once: false });
-    const { data: rows } = useQuery<any[]>(`SELECT rowid, * FROM "${st}" ${orderByString(orderBy)} LIMIT 300`, [], { fireIf: st !== undefined, dependencies: [] });
+    const { data: rows } = useQuery<any[]>(currentQuery(), [], { fireIf: st !== undefined, dependencies: [] });
     const { data: rowCount } = useQuery<{ count: number }>(`SELECT COUNT(*) AS count FROM "${st}"`, [], { fireIf: st !== undefined, first: true, dependencies: [] });
     const { data: columns } = useQuery<SqliteColumnInfo[]>(`PRAGMA table_info('${st}')`, [], { fireIf: st !== undefined });
 
@@ -116,7 +121,7 @@ export const TableViewer = () => {
             input.selectionStart = editingColumnCursorPosition;
             input.selectionEnd = editingColumnCursorPosition;
         }
-    }, [editingColumnCursorPosition])
+    }, [editingColumnCursorPosition]);
 
     const toggleFullscreen = () => {
         if (!fullscreen) {
@@ -128,10 +133,10 @@ export const TableViewer = () => {
         }
     }
 
-    const onSqlEditorResults = (rows: any[]): void => {
+    const onSqlEditorResults = (sql: string, rows: any[]): void => {
         if (rows.length === 0) return;
         const columns = Object.keys(rows[0]);
-        setSqlEditorResults({ columns, rows });
+        setSqlEditorResults({sql, columns, rows });
         setMode('query');
     }
 
@@ -180,7 +185,8 @@ export const TableViewer = () => {
 
     const deselectAll = () => {
         setSelectedItems(undefined);
-        setTableRightClicked(undefined);
+        setTablesRightClicked(undefined);
+        setDataRightClicked(undefined);
         setEditingColumn(undefined);
     }
 
@@ -202,8 +208,24 @@ export const TableViewer = () => {
             }
         }
         if (e.type === "contextmenu") {
-            setTableRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
+            setTablesRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
         }
+    }
+
+    const handleRightClickedDataTable = (e: PointerEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        let sql = currentQueryNoRowid();
+        if (sqlEditorResults) {
+            sql = sqlEditorResults.sql;
+        }
+
+        setDataRightClicked({
+            sql: sql,
+            mouseX: Math.floor(e.clientX), 
+            mouseY: Math.floor(e.clientY)
+        });
     }
 
     const handleClickRow = (e: PointerEvent, rowIndex: number) => {
@@ -275,7 +297,9 @@ export const TableViewer = () => {
     if (!show) return <></>
     return (
         <>
-            <TableDropdown tables={tables} event={tableRightClicked} />
+            <TableDropdown tables={tables} event={tablesRightClicked} />
+            <DataDropdown event={dataRightClicked} />
+
             <div
                 className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`}
                 tabIndex={0}
@@ -322,7 +346,7 @@ export const TableViewer = () => {
                             })}
                         </ul>
                     </section>
-                    <div className="h-full w-full overflow-y-auto bg-white focus:outline-none" tabIndex={0} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
+                    <div className="h-full w-full overflow-y-auto bg-white focus:outline-none" tabIndex={0} onContextMenu={handleRightClickedDataTable} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
                         <table className="flex-1 w-full bg-white mb-32">
                             <thead className="flex-1 bg-gray-200 sticky top-0 w-full">
                                 <tr className="w-full">
@@ -412,171 +436,5 @@ export const TableViewer = () => {
     );
 }
 
-import CodeMirror from '@uiw/react-codemirror';
-import { keymap } from "@codemirror/view";
-import { sql as sqlLang, SQLite } from "@codemirror/lang-sql";
-import { autocompletion } from "@codemirror/autocomplete";
-import { githubLight } from "@uiw/codemirror-theme-github";
 
-type SqlEditorProps = {
-    isOpen: boolean
-    fullscreen: boolean
-    onResults: (rows: any[]) => void
-}
 
-const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => {
-    const db = useDB();
-
-    const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
-    const [sqlError, setSqlError] = useState(undefined);
-
-    const runSql = async (sql: string) => {
-        const operation = sqlDetermineOperation(sql);
-        if (operation === 'select' || operation === 'pragma' || operation === 'explain') {
-            const { data, error } = await db.selectWithError(sql, []);
-            if (error) {
-                console.log(error);
-                setSqlError(error.message);
-            } else if (data.length === 0) {
-                // @Improvement - Would be nice if we would still return an empty set of results with column headers. The reason
-                // we can't is that we are basing the columns on the results. We could use the EXPLAIN keyword to get what columns are mapped.
-                setSqlError("No results");
-            }
-            else {
-                onResults(data as any[]);
-                setSqlError(undefined);
-            }
-        } else {
-            const err = await db.exec(sql, []);
-            if (err) {
-                setSqlError(err.message);
-            } else {
-                setSqlError(undefined);
-            }
-        }
-    }
-
-    const textChanged = (value: any) => {
-        setSql(value);
-        localStorage.setItem("tw_sql_editor_query", value);
-    }
-
-    const customKeymap = keymap.of([
-        {
-            key: "ctrl-Enter",
-            run: () => {
-                runSql(sql);
-                return true;
-            },
-        },
-    ]);
-
-    const noCompletions = autocompletion({
-        override: [
-            () => null,
-        ],
-    });
-
-    const editorHeight = () => { // @Hack - this is super hacky. Would wish that the height could just be 100%, but codeMirror says no. sigh...
-        if (sqlError) {
-            return fullscreen ? "88vh" : "270px"
-        } else {
-            return fullscreen ? "91vh" : "296px"
-        }
-    }
-
-    if (!isOpen) return <></>
-    return (
-        <div className="w-full p-1 border-l-4 border-gray-300">
-            {sqlError && (
-                <div className="">
-                    <p className="text-red-400">{sqlError}</p>
-                </div>
-            )}
-            <CodeMirror
-                value={sql}
-                onChange={textChanged}
-                extensions={[
-                    sqlLang({ upperCaseKeywords: true, dialect: SQLite }),
-                    noCompletions,
-                    customKeymap,
-                ]}
-                height={editorHeight()}
-                theme={githubLight}
-                autoFocus={true}
-            />
-        </div>
-    )
-}
-
-type TDProps = {
-    tables: { name: string }[]
-    event: RightClickTableEvent
-}
-
-const TableDropdown = ({ tables, event }: TDProps) => {
-    const db = useDB();
-
-    const menuRef = useRef<HTMLElement | null>(null);
-
-    const exportSql = async () => {
-        if (event === undefined) return
-
-        const tblName = tables[event.tableIndex].name;
-
-        const cols = await db.select(`PRAGMA table_info('${tblName}')`, []);
-        const rows = await db.select(`SELECT * FROM "${tblName}"`, []);
-
-        const values = rows.map(r => Object.values(r)).map(vals => `(${vals.map(v => `'${v}'`).join(',')})`).join(',\n');
-        const sql = `
-            INSERT INTO "${tblName}" (${cols.map(c => c.name).join(', ')})
-            VALUES ${values};
-        `;
-        const link = document.createElement("a");
-        const file = new Blob([sql], { type: 'text/plain' });
-        link.href = URL.createObjectURL(file);
-        link.download = `${tblName}.sql`;
-        link.click();
-        URL.revokeObjectURL(link.href);
-    }
-
-    const exportJson = async () => {
-        if (event === undefined) return
-
-        const tblName = tables[event.tableIndex].name;
-
-        const rows = await db.select(`SELECT * FROM "${tblName}"`, []);
-        const json = JSON.stringify(rows);
-
-        const link = document.createElement("a");
-        const file = new Blob([json], { type: 'application/json' });
-        link.href = URL.createObjectURL(file);
-        link.download = `${tblName}.json`;
-        link.click();
-        URL.revokeObjectURL(link.href);
-    }
-
-    const items = [
-        { name: "Export SQL", onClick: exportSql },
-        { name: "Export JSON", onClick: exportJson }
-    ];
-
-    useEffect(() => {
-        if (menuRef.current === null) return
-        if (event === undefined) return
-
-        menuRef.current.style.top = `${event.mouseY}px`
-        menuRef.current.style.left = `${event.mouseX}px`
-    }, [event])
-
-    if (!event) return <></>
-    return (
-        <div ref={menuRef} className={`absolute z-50 p-1 bg-gray-200 border border-gray-400 w-32`}>
-            <div className="flex flex-col space-y-2">
-                {items.map((item, i) => (
-                    <button key={i} onClick={item.onClick} className="pl-1 text-start w-full border-b-gray-400 cursor-default hover:bg-gray-100">{item.name}</button>
-                ))}
-            </div>
-        </div>
-    )
-}

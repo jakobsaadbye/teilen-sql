@@ -13,10 +13,11 @@ export const insertTablesStmt = `
         primary key(type, tbl_name, col_id, pk)
     );
 
-    CREATE index IF NOT EXISTS crr_changes_index ON crr_changes(tbl_name);
+    CREATE index IF NOT EXISTS crr_changes_index ON crr_changes(tbl_name, created_at);
 
     CREATE TABLE IF NOT EXISTS crr_columns(
         tbl_name text not null,
+
         col_id text not null,
         type text not null,
         fk text,

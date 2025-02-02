@@ -2306,7 +2306,8 @@
       "npm:@uiw/react-codemirror@^4.23.7",
       "npm:react@19",
       "npm:tailwind-merge@^2.6.0",
-      "npm:tailwind@4"
+      "npm:tailwind@4",
+      "npm:vite-plugin-svgr@^4.2.0"
     ]
   }
 }

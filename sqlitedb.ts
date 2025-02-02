@@ -224,7 +224,7 @@ export class SqliteDB {
                 const pk = deleteRowidToPk['' + change.rowid];
                 assert(pk);
                 
-                return [{ type: 'delete', tbl_name: tblName, col_id: null, pk, value: 0, site_id: this.siteId, created_at: now, applied_at: 0 }];
+                return [{ type: 'delete', tbl_name: tblName, col_id: "tombstone", pk, value: 1, site_id: this.siteId, created_at: now, applied_at: 0 }];
             };
             case "update": {
                 const row = await this.first<any>(`SELECT * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
