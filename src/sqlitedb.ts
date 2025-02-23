@@ -1,5 +1,6 @@
 import { ms } from "./ms.ts"
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, sqlDetermineOperation, sqlAsSelectStmt } from "./change.ts";
+import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory } from "./change.ts";
+import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt } from "./utils.ts"
 import { insertTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
 

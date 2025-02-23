@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { SqliteDB } from '../../src/sqlitedb.ts';
 import { Syncer } from "../../src/syncer.ts";
-import { sqlExplainQuery } from "../../src/change.ts";
+import { sqlExplainQuery } from "../../src/utils.ts";
 
 export const SqliteContext = createContext<SqliteDB | null>(null);
 

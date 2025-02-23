@@ -1,4 +1,4 @@
-import { assert } from "./utils.ts";
+import { assert, pkEncodingOfRow, sqlPlaceholders } from "./utils.ts";
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
@@ -898,7 +898,17 @@ export const compactChanges = async (db: SqliteDB, changeSet: Change[]) => {
     }
 }
 
-export const getChangeSets = (changes: Change[]): Change[][] => {
+export const getCurrentChangeCount = async (db: SqliteDB) => {
+    const client = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = $1`, [db.siteId]);
+    if (!client) return -1;
+    const lastPushedAt = client.last_pushed_at;
+
+    const rows = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > $1 AND site_id = $2`, [lastPushedAt, db.siteId]);
+    const changeSets = getChangeSets(rows);
+    return changeSets.length;
+}
+
+const getChangeSets = (changes: Change[]): Change[][] => {
     if (changes.length === 0) return [];
 
     // Split the changes into groups of primary key and change type
@@ -931,125 +941,4 @@ const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, va
     const values = pk.split('|');
     assert(pkCols.length === values.length);
     return pkCols.map((colId, i) => [colId, values[i]]);
-}
-
-export const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
-    const pkCols = db.pks[tblName];
-    assert(pkCols && pkCols.length > 0);
-    return Object.entries(row).filter(([colId, _]) => pkCols.includes(colId)).map(([_, value]) => value).join('|');
-}
-
-export const sqlAsSelectStmt = (sql: string) => {
-    const s = sql.trim().split(' ');
-    switch (s[0].toLowerCase()) {
-        case "insert": {
-            s.shift();
-            s.shift();
-            const tableName = s[0];
-            return `SELECT rowid, * FROM ${tableName}`;
-        }
-        case "update": {
-            s.shift();
-            const tableName = s[0];
-            const whereIndex = s.findIndex(tok => tok.toLowerCase() === "where");
-            if (whereIndex === -1) {
-                console.error("Missign WHERE clause in UPDATE statement");
-                return null;
-            }
-            const condition = s.slice(whereIndex + 1).join(' ');
-            return `SELECT rowid, * FROM ${tableName} WHERE ${condition}`;
-        }
-        case "delete": {
-            s.shift();
-            s.shift();
-            const tableName = s[0];
-            s.shift();
-            s.shift();
-            const condition = s.join(' ');
-            return `SELECT rowid, * FROM ${tableName} WHERE ${condition}`;
-        }
-        default:
-            console.error(`Unknown start of sql statement in sqlAsSelectStmt(). Starts with ${s[0]}`);
-            return null;
-    }
-}
-
-export const sqlPlaceholders = (a: any[]) => {
-    return `${a.map(_ => `?`).join(',')}`;
-}
-
-type SqlOperation = "none" | "select" | "insert" | "update" | "delete" | "pragma" | "explain";
-
-export const sqlDetermineOperation = (sql: string) : SqlOperation => {
-    const s = sql.trim().split(' ');
-    switch (s[0].toLowerCase()) {
-        case "select": return "select";
-        case "pragma": return "pragma";
-        case "explain": return "explain";
-        case "insert": return "insert";
-        case "update": return "update";
-        case "delete": return "delete";
-        default: 
-            return "none"
-    }
-}
-
-export const sqlExplainExec = (sql: string): string => {
-    const s = sql.trim().split(' ');
-    switch (s[0].toLowerCase()) {
-        case "insert": {
-            s.shift();
-            s.shift();
-            const tableName = s[0];
-            return tableName.replaceAll(`"`, '').trim();
-        }
-        case "update": {
-            s.shift();
-            const tableName = s[0];
-            return tableName.replaceAll(`"`, '').trim();
-        }
-        case "delete": {
-            s.shift();
-            s.shift();
-            const tableName = s[0];
-            return tableName.replaceAll(`"`, '').trim();
-        }
-        default: {
-            return "";
-        }
-    }
-}
-
-export const sqlExplainQuery = async (db: SqliteDB, sql: string): Promise<string[]> => {
-    const s = sql.trim().split(' ');
-    switch (s[0].toLowerCase()) {
-        case "pragma": {
-            s.shift();
-            if (s[0].includes("table_info")) {
-                const split = s[0].split("(");
-                if (split.length > 1) {
-                    const tblName = split[1].replaceAll("'", "").replaceAll(")", "");
-                    return [tblName]
-                }
-            }
-            return [];
-        }
-        case "select": {
-            const rows = await db.select<{ detail: string }[]>(`EXPLAIN QUERY PLAN ${sql}`, []);
-            if (rows.length === 0) return [];
-            const tblNames = [];
-            for (const row of rows) {
-                if (row.detail.includes("SCAN")) {
-                    const tblName = row.detail.split(" ")[1];
-                    tblNames.push(tblName)
-                }
-            }
-            return tblNames;
-        }
-        default: {
-            // console.log(`In sqlAffectedTable(). Couldn't infer table name from '${sql}'`);
-            return [];
-        }
-    }
-
 }

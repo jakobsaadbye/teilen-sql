@@ -1,19 +1,9 @@
 import React from "react";
-import { Change, Client, SqliteDB, getChangeSets } from "@teilen-sql";
+import { getCurrentChangeCount } from "@teilen-sql";
 import { useQuery, useSyncer } from "@teilen-sql-react"
 import { useGoBananas } from "../hooks/monkey.ts";
 import { useIcon } from "../hooks/useIcon.ts"
 import { twMerge } from 'tailwind-merge'
-
-const countChanges = async (db: SqliteDB) => {
-    const client = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = $1`, [db.siteId]);
-    if (!client) return -1;
-    const lastPushedAt = client.last_pushed_at;
-
-    const rows = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > $1 AND site_id = $2`, [lastPushedAt, db.siteId]);
-    const changeSets = getChangeSets(rows);
-    return changeSets.length;
-}
 
 type Props = {
     boardId?: string
@@ -23,7 +13,7 @@ type Props = {
 export const ControlBar = ({ boardId, className }: Props) => {
     const [goBananas, cancel, running] = useGoBananas(boardId);
 
-    const changeCount = useQuery<number | undefined>(countChanges, []).data;
+    const changeCount = useQuery<number | undefined>(getCurrentChangeCount, []).data;
 
     const syncer = useSyncer("http://127.0.0.1:3000/changes");
     const pullChanges = () => syncer.pullChanges();

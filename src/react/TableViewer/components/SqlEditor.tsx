@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useDB } from "../../hooks.ts";
-import { sqlDetermineOperation } from "../../../../src/change.ts";
+import { sqlDetermineOperation } from "../../../../src/utils.ts";
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from "@codemirror/view";
 import { sql as sqlLang, SQLite } from "@codemirror/lang-sql";
