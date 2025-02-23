@@ -1,4 +1,4 @@
-import { assert } from "jsr:@std/assert@^0.217.0/assert";
+import { assert } from "./utils.ts";
 
 /**
  * Implementation heavily inspired by https://observablehq.com/@dgreensp/implementing-fractional-indexing
