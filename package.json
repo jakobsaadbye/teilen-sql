@@ -1,6 +1,6 @@
 {
   "name": "@jakobsaadbye/teilen-sql",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A library for distributed sql in the browser",
   "main": "",
   "dependencies": {
