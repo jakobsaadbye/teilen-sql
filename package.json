@@ -4,6 +4,9 @@
   "description": "A library for distributed sql in the browser",
   "main": "",
   "dependencies": {
+    "@codemirror/autocomplete": "^6.18.4",
+    "@codemirror/lang-sql": "^6.8.0",
+    "@codemirror/view": "^6.36.1",
     "tailwind": "^4.0.0",
     "react": "^19.0.0",
     "vite-plugin-svgr": "^4.3.0",
