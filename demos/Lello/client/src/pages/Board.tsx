@@ -302,7 +302,7 @@ const ColumnMenu = ({ columnId, removeColumn }: ColumnMenuProps) => {
         <div className='relative' tabIndex={0} onBlur={() => setMenuIsOpen(false)}>
             <MoreHorizontal onClick={() => setMenuIsOpen(!menuIsOpen)} className='fill-gray-500 w-8 h-8 hover:fill-gray-700 cursor-pointer' />
             {menuIsOpen && (
-                <div className='absolute left-0'>
+                <div className='absolute z-10 left-0'>
                     <div className='flex flex-col space-y-2 p-1 bg-gray-100 border-2 border-gray-400 rounded-lg'>
                         <div onClick={remove} tabIndex={1} className='flex py-2 px-4 space-x-1 bg-red-400 hover:bg-red-500 text-white rounded-md cursor-pointer' onMouseDown={e => e.preventDefault()}>
                             <Trashcan />
@@ -318,7 +318,7 @@ const ColumnMenu = ({ columnId, removeColumn }: ColumnMenuProps) => {
 type RowProps = {
     ctx: Context
     columnId: string
-    index: number
+    isFirst: boolean
     todo: Todo
 }
 
@@ -331,25 +331,31 @@ const Row = ({ ctx, columnId, isFirst, todo }: RowProps) => {
         ctx.onTodoDrag(columnId, todo.id, e);
     }
 
+    const removeTodo = () => {
+        BoardRepo.deleteTodo(db, todo.id);
+    }
+
     const deleteIfEmpty = () => {
         if (todo.title === "") {
-            BoardRepo.deleteTodo(db, todo.id);
+            removeTodo();
             return;
         }
     };
 
-    const updateTitle = async (title: string) => {
+    const updateTitle = (title: string) => {
         // NOTE: Desperately this needs something like PerriText and change collapsing
         //       Right now, every keystroke is a save to the database
         BoardRepo.saveTodo(db, { ...todo, title });
     }
+
+    const { XIcon } = useIcon();
 
     return (
         <>
             {isFirst && (
                 <TodoSpacer ctx={ctx} columnId={columnId} todoId={"-1"} />
             )}
-            <div draggable onDragStart={onDragStart}>
+            <div className="relative" draggable onDragStart={onDragStart}>
                 <textarea
                     className='w-full p-2 min-h-20 text-start resize-none cursor-pointer rounded-md bg-gray-100 text-gray-600 border-2 border-gray-400 hover:border-orange-400 outline-none focus:border-orange-600'
                     value={todo.title}
@@ -358,6 +364,9 @@ const Row = ({ ctx, columnId, isFirst, todo }: RowProps) => {
                     onBlur={deleteIfEmpty}
                     onChange={(e) => updateTitle(e.target.value)}
                 />
+                <div onClick={removeTodo} className="absolute z-0 top-1 right-1">
+                    <XIcon className="p-1 w-6 h-6 fill-gray-400" />
+                </div>
             </div>
             <TodoSpacer ctx={ctx} columnId={columnId} todoId={todo.id} />
         </>

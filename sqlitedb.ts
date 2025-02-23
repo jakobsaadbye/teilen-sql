@@ -1,5 +1,5 @@
 import { ms } from "./ms.ts"
-import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, getRelatedChanges, sqlDetermineOperation, sqlAsSelectStmt } from "./change.ts";
+import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, sqlDetermineOperation, sqlAsSelectStmt } from "./change.ts";
 import { insertTablesStmt } from "./tables.ts";
 import { assert } from "jsr:@std/assert@0.217/assert";
 
@@ -29,14 +29,17 @@ export type SqliteForeignKey = {
 }
 
 export class SqliteDB {
-    #debug = false;
-    #mp: MessagePort
-    #channelTableChange: BroadcastChannel
+    name: string;
     siteId = "";
     pks: { [tblName: string]: string[] } = {};
     crrColumns: { [tbl_name: string]: CrrColumn[] } = {};
 
-    constructor(mp: MessagePort) {
+    #debug = false;
+    #mp: MessagePort
+    #channelTableChange: BroadcastChannel
+
+    constructor(name:string, mp: MessagePort) {
+        this.name = name;
         this.#mp = mp;
 
         // Broadcast channel to notify dependent queries to re-run
@@ -295,8 +298,8 @@ export class SqliteDB {
     }
 }
 
-export const createDb = async (dbName: string = 'main'): Promise<SqliteDB> => {
-    const workerScriptPath = `./sqlite-worker.js?dbName=${dbName}`;
+export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
+    const workerScriptPath = `./sqlite-worker.js?dbName=${name}`;
 
     // Setup up a message channel to communicate with worker thread
     const { port1, port2 } = new MessageChannel();
@@ -322,7 +325,7 @@ export const createDb = async (dbName: string = 'main'): Promise<SqliteDB> => {
     }
 
     console.log(`Connected to the database ...`);
-    const db = new SqliteDB(port1);
+    const db = new SqliteDB(name, port1);
 
     // Setup tables
     const err = await db.exec(insertTablesStmt, []);

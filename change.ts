@@ -48,220 +48,188 @@ export type FkRelation = {
 export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, []);
 
-    {
-        const inserts = changes.filter(c => c.type === 'insert');
-        const insertSets = getChangeSets(inserts);
-        for (const insert of insertSets) {
+    const changeSets = getChangeSets(changes);
 
-            await saveChanges(db, insert);
+    const touchedTables = unique(changeSets.map(changeSet => changeSet[0].tbl_name));
+
+    // :ModifyForeignKeyInserts
+    const fkColsPerTable: {[table: string] : CrrColumn[]} = {}; 
+    for (const table of touchedTables) {
+        fkColsPerTable[table] = db.crrColumns[table].filter(col => col.fk);
+    };
+
+    for (const changeSet of changeSets) {
+        const type = changeSet[0].type;
+        switch (type) {
+            case 'insert': {
+                const insert = changeSet;
+
+                await saveChanges(db, insert);
             
-            let insertRow = true;
-            try {
-                insertRow = await doResurrection(db, insert);
-            } catch (e) {
-                console.log(insert);
-                throw e;
-            }
-            
+                const insertRow = await doResurrection(db, insert);
 
-            if (insertRow) {
-                const tblName = insert[0].tbl_name;
-                const cols = insert.map(i => i.col_id);
-                const values = insert.map(i => i.value);
-                const stmt = `
-                    INSERT INTO "${tblName}" (${cols.join(",")})
-                    VALUES (${cols.map(_ => '?').join(",")})
-                    ON CONFLICT DO NOTHING
-                `;
-    
-                await db.execOrThrow(stmt, values);
-            }
-        }
-    }
-
-    {
-        const updates = changes.filter(c => c.type === 'update');
-        const updateSets = getChangeSets(updates);
-        const pks = updateSets.map(update => update[0].pk);
-        const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE type != 'delete' AND pk IN (${sqlPlaceholders(pks)}) ORDER BY created_at DESC`, [...pks]);
+                if (insertRow) {
+                    const tblName = insert[0].tbl_name;
+                    const cols = insert.map(i => i.col_id);
+                    const values = insert.map(i => i.value);
+                    const stmt = `
+                        INSERT OR IGNORE INTO "${tblName}" (${cols.join(",")})
+                        VALUES (${cols.map(_ => '?').join(",")})
+                    `;
         
-        // :ModifyForeignKeyInserts
-        const updatedTables = unique(updates.map(update => update.tbl_name));
-        const fkColsPerTable: {[table: string] : CrrColumn[]} = {}; 
-        for (const table of updatedTables) {
-            fkColsPerTable[table] = db.crrColumns[table].filter(col => col.fk);
-        };
-
-        for (const updateSet of updateSets) {
-            const tblName = updateSet[0].tbl_name;
-            const pk = updateSet[0].pk;
-
-            const changesToApply: Change[] = [];
-            for (const update of updateSet) {
-                const prevChangeIdx = currentChanges.findIndex(change => change.pk === pk && change.col_id === update.col_id);
-                const prevChange = currentChanges[prevChangeIdx];
-                if (isLastWriter(update, prevChange)) {
-                    changesToApply.push(update);
-                    currentChanges[prevChangeIdx] = update;
-
-                    // :ModifyForeignKeyInserts
-                    const fkCols = fkColsPerTable[update.tbl_name];
-                    if (fkCols.length === 0) continue;
-                    const fkCol = fkCols.find(col => col.col_id === update.col_id);
-                    if (fkCol) {
-                        await db.execOrThrow(`UPDATE "crr_changes" SET value = ? WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND col_id = ?`, [update.value, update.tbl_name, pk, fkCol.col_id]);
-                    }
+                    await db.execOrThrow(stmt, values);
                 }
-            }
-            if (changesToApply.length === 0) continue;
+            } break;
+            case 'update': {
+                const updateSet = changeSet;
 
-            await saveChanges(db, changesToApply);
+                const tblName = updateSet[0].tbl_name;
+                const pk = updateSet[0].pk;
 
-            const applyChangesToRow = await doResurrection(db, updateSet);
-            if (applyChangesToRow) {
-                const values = changesToApply.map(c => c.value);
-                const stmt = `
-                    UPDATE "${tblName}"
-                    SET ${changesToApply.map(c => `${c.col_id} = ?`).join(",")}
-                    WHERE ${pkEqual(db, tblName, pk)}
-                `;
-                await db.execOrThrow(stmt, values);
-            } else {
-                // Update is probably cancelled because of a dead parent
-                // Check if we are moving into a dead parent, if so, we need to delete ourselves here
+                const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk = ? ORDER BY created_at DESC`, [pk]);
                 const fkCols = fkColsPerTable[tblName];
-                const fkColNames = fkCols.map(col => col.col_id);
-                if (fkCols.length === 0) continue;
 
-                const fkUpdates = updateSet.filter(change => fkColNames.includes(change.col_id as string));
-                if (fkUpdates.length === 0) continue;
-                
-                let movedIntoDeadParent = false;
-                for (const fkUpdate of fkUpdates) {
-                    const fkCol = fkCols.find(col => col.col_id === fkUpdate.col_id);
-                    assert(fkCol);
+                const changesToApply: Change[] = [];
+                for (const update of updateSet) {
+                    const prevChange = currentChanges.find(change => change.col_id === update.col_id);
+                    if (isLastWriter(update, prevChange)) {
+                        changesToApply.push(update);
 
-                    const parentTblName = fkCol.fk!.split("|")[0];
-                    const parentPk      = fkUpdate.value;
-
-                    const activeParentDelete = await db.first<Change>(`
-                        SELECT * FROM "crr_changes"
-                        WHERE tbl_name = ? AND pk = ? AND type = 'delete' AND value = 1
-                    `, [parentTblName, parentPk]);
-
-                    if (activeParentDelete) {
-                        movedIntoDeadParent = true;
-                        break;
-                    }
-                }
-
-                if (movedIntoDeadParent) {
-                    await db.execOrThrow(`DELETE FROM "${tblName}" WHERE ${pkEqual(db, tblName, pk)}`, []);
-                }
-            }
-        }
-    }
-
-    {
-        // @Speed @LowhangingFruit - We really want to look into caching the way we look up if any changes has been
-        // made to child rows.
-        //
-        // @Cleanup - Remove comment!
-        // NOTE: Deletions are based on a hybrid between Add-Wins and Remove-Wins set
-        // based on a user defined 'delete_wins_after' field. If no 'new' updates have been
-        // made to the row or any referencing rows since the deletion - 'delete_wins_after', then the row
-        // gets deleted. Otherwise the delete is ignored.
-        const deletes = changes.filter(c => c.type === 'delete');
-        const rowsToDelete: { [tblName: string]: string[] } = {};
-        for (const del of deletes) {
-            const newChangesToThisRow = await db.select<Change[]>(`
-                SELECT * FROM "crr_changes" 
-                WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND pk = ? AND created_at >= ?
-                ORDER BY created_at DESC
-            `, [del.site_id, del.tbl_name, del.pk, del.created_at]);
-
-            let newChildChanges: Change[] = [];
-            if (newChangesToThisRow.length === 0) {
-                const root = { tblName: del.tbl_name, pk: del.pk };
-                const queue = [root];
-                search: while (queue.length > 0) {
-                    const parent = queue.pop() as { tblName: string, pk: string };
-
-                    const childRelations = childFkRelations(db, parent.tblName, parent.pk);
-
-                    for (const rel of childRelations) {
-                        // @Speed - Make a dedicated query to select only child changes that are newer than the delete instead of getChildChanges()
-                        // which grabs all of them into memory first.
-                        const childChanges = await getChildChanges(db, rel); 
-                        const childPks = childChanges.map(change => change.pk);
-
-                        const newChanges = childChanges.filter(c => {
-                            if (c.type !== 'delete' && c.site_id !== del.site_id && c.created_at >= del.created_at) {
-                                return true;
+                        // :ModifyForeignKeyInserts
+                        if (fkCols.length > 0) {
+                            const fkCol = fkCols.find(col => col.col_id === update.col_id);
+                            if (fkCol) {
+                                await db.execOrThrow(`UPDATE "crr_changes" SET value = ? WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND col_id = ?`, [update.value, update.tbl_name, pk, fkCol.col_id]);
                             }
-                            return false;
-                        });
-
-                        if (newChanges.length > 0) {
-                            // We found a new child change. Don't delete the row!
-                            // console.log(`Stopped a delete from occuring because a new change was found to child table '${rel.childTblName}'`, newChanges);
-                            newChildChanges = newChanges;
-                            break search;
-                        }
-
-                        for (const childPk of childPks) {
-                            const grandChildRelations = childFkRelations(db, rel.childTblName, childPk);
-                            queue.push(...grandChildRelations);
                         }
                     }
                 }
-            }
+                if (changesToApply.length === 0) continue;
 
-            const allNewChanges = [...newChangesToThisRow, ...newChildChanges];
-            if (allNewChanges.length === 0) {
-                if (rowsToDelete[del.tbl_name] === undefined) rowsToDelete[del.tbl_name] = [del.pk];
-                else rowsToDelete[del.tbl_name].push(del.pk);
-            } else {
-                // We ignore the delete.
-                // We make a 'counter' change that acts as a 'new' change
-                // that can get pushed to other clients so that they will reflect that the delete got cancelled.
-                // Its simply a re-play of the newest change so it won't have any effect.
-                // @Investigate: Is this even necessary now? 
-                // NOTE: Should this be re-playing all the new changes???
-                // const change = allNewChanges[0];
-                // const changeAsUpdate: Change = {...change, type : 'update'};
-                // await saveChanges(db, [changeAsUpdate]);
-                // console.log(`Produced a counter change`, changeAsUpdate);
-                del.value = 0; // Mark delete as cancelled
-            }
+                await saveChanges(db, changesToApply);
+
+                const applyChangesToRow = await doResurrection(db, updateSet);
+                if (applyChangesToRow) {
+                    const values = changesToApply.map(c => c.value);
+                    const stmt = `
+                        UPDATE "${tblName}"
+                        SET ${changesToApply.map(c => `${c.col_id} = ?`).join(",")}
+                        WHERE ${pkEqual(db, tblName, pk)}
+                    `;
+                    await db.execOrThrow(stmt, values);
+                } else {
+                    // Update is probably cancelled because of a dead parent
+                    // Check if we are moving into a dead parent, if so, we need to delete ourselves here
+                    const fkCols = fkColsPerTable[tblName];
+                    const fkColNames = fkCols.map(col => col.col_id);
+                    if (fkCols.length === 0) continue;
+
+                    const fkUpdates = updateSet.filter(change => fkColNames.includes(change.col_id as string));
+                    if (fkUpdates.length === 0) continue;
+                    
+                    let movedIntoDeadParent = false;
+                    for (const fkUpdate of fkUpdates) {
+                        const fkCol = fkCols.find(col => col.col_id === fkUpdate.col_id);
+                        assert(fkCol);
+
+                        const parentTblName = fkCol.fk!.split("|")[0];
+                        const parentPk      = fkUpdate.value;
+
+                        const activeParentDelete = await db.first<Change>(`
+                            SELECT * FROM "crr_changes"
+                            WHERE tbl_name = ? AND pk = ? AND type = 'delete' AND value = 1
+                        `, [parentTblName, parentPk]);
+
+                        if (activeParentDelete) {
+                            movedIntoDeadParent = true;
+                            break;
+                        }
+                    }
+
+                    if (movedIntoDeadParent) {
+                        await db.execOrThrow(`DELETE FROM "${tblName}" WHERE ${pkEqual(db, tblName, pk)}`, []);
+                    }
+                }
+            } break;
+            case "delete": {
+
+                // @Speed @LowhangingFruit - We really want to look into caching the way we look up if any changes has been
+                // made to child rows.
+
+                const del = changeSet[0];
+
+                const newChangesToThisRow = await db.select<Change[]>(`
+                    SELECT * FROM "crr_changes" 
+                    WHERE type != 'delete' AND site_id != ? AND tbl_name = ? AND pk = ? AND created_at >= ?
+                    ORDER BY created_at DESC
+                `, [del.site_id, del.tbl_name, del.pk, del.created_at]);
+    
+                let newChildChanges: Change[] = [];
+                if (newChangesToThisRow.length === 0) {
+                    const root = { tblName: del.tbl_name, pk: del.pk };
+                    const queue = [root];
+                    search: while (queue.length > 0) {
+                        const parent = queue.pop() as { tblName: string, pk: string };
+    
+                        const childRelations = childFkRelations(db, parent.tblName, parent.pk);
+    
+                        for (const rel of childRelations) {
+                            // @Speed - Make a dedicated query to select only child changes that are newer than the delete instead of getChildChanges()
+                            // which grabs all of them into memory first.
+                            const childChanges = await getChildChanges(db, rel); 
+                            const childPks = childChanges.map(change => change.pk);
+    
+                            const newChanges = childChanges.filter(c => {
+                                if (c.type !== 'delete' && c.site_id !== del.site_id && c.created_at >= del.created_at) {
+                                    return true;
+                                }
+                                return false;
+                            });
+    
+                            if (newChanges.length > 0) {
+                                // We found a new child change. Don't delete the row!
+                                // console.log(`Stopped a delete from occuring because a new change was found to child table '${rel.childTblName}'`, newChanges);
+                                newChildChanges = newChanges;
+                                break search;
+                            }
+    
+                            for (const childPk of childPks) {
+                                const grandChildRelations = childFkRelations(db, rel.childTblName, childPk);
+                                queue.push(...grandChildRelations);
+                            }
+                        }
+                    }
+                }
+    
+                const allNewChanges = [...newChangesToThisRow, ...newChildChanges];
+                if (allNewChanges.length === 0) {
+                    await db.execOrThrow(`DELETE FROM "${del.tbl_name}" WHERE ${pkEqual(db, del.tbl_name, del.pk)}`, []);
+                } else {
+                    // We ignore the delete.
+                    // We make a 'counter' change that acts as a 'new' change
+                    // that can get pushed to other clients so that they will reflect that the delete got cancelled.
+                    // Its simply a re-play of the newest change so it won't have any effect.
+                    // @Investigate: Is this even necessary now? 
+                    // NOTE: Should this be re-playing all the new changes???
+                    // const change = allNewChanges[0];
+                    // const changeAsUpdate: Change = {...change, type : 'update'};
+                    // await saveChanges(db, [changeAsUpdate]);
+                    // console.log(`Produced a counter change`, changeAsUpdate);
+                    del.value = 0; // Mark delete as cancelled
+                }
+
+                saveChanges(db, changeSet);
+            } break;
         }
-        for (const [tblName, pks] of Object.entries(rowsToDelete)) {
-            const condition = pks.map(pk => pkEqual(db, tblName, pk)).join(' OR ');
-            const stmt = `
-                DELETE FROM "${tblName}"
-                WHERE ${condition}
-            `;
-            await db.execOrThrow(stmt, []);
-        }
-        await saveChanges(db, deletes);
     }
 
     // Patch any fractional index columns that might have collided. 
     // NOTE(*important*): Must run after all the changes have been applied 
     // so that all rows are known about
-    const changeSets = getChangeSets(changes);
     await fixFractionalIndexCollisions(db, changeSets, false);
 
     // @Investigate: Is this necessary???
     await updateLastPulledAtFromPeers(db, changes);
-
-    // const todos   = await todosWithSamePositions(db);
-    // const columns = await columnsWithSamePositions(db);
-    // if (todos.length > 0 || columns.length > 0) {
-    //     console.error(`Todos or columns were found to have the same positions after the positions should have been fixed in fixFractionalIndexCollisions()`, todos, columns);
-
-    //     await fixFractionalIndexCollisions(db, changeSets, true);
-    // }
 
     await db.exec(`COMMIT;`, []);
 }

@@ -16,7 +16,7 @@ export const DataDropdown = ({ event }: Props) => {
 
         const rows = await db.select<any[]>(event.sql, []);
 
-        const jsonData = JSON.stringify(rows);
+        const jsonData = JSON.stringify(rows, null, "\t");
 
         const link = document.createElement("a");
         const file = new Blob([jsonData], { type: 'text/plain' });

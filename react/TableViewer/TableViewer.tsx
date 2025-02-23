@@ -1,5 +1,8 @@
+// TODO:
+//    - Fix z-index overlapping with underlying application. Maybe pick some high z-indicies that users unlikely will use
+
 import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { twMerge } from "tailwind-merge";
 import { useDB, useQuery } from "../hooks.ts"
 
@@ -217,7 +220,7 @@ export const TableViewer = () => {
         e.stopPropagation();
         
         let sql = currentQueryNoRowid();
-        if (sqlEditorResults) {
+        if (sqlEditorResults && mode === "query") {
             sql = sqlEditorResults.sql;
         }
 
@@ -245,6 +248,7 @@ export const TableViewer = () => {
                     setSelectedItems({ type: 'row', items: [anchorA, ...between, anchorB] });
                 }
             } else {
+                deselectAll();
                 setSelectedItems({ type: 'row', items: [rowIndex] });
             }
         }
