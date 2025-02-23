@@ -7,7 +7,7 @@ import { twMerge } from "tailwind-merge";
 import { useDB, useQuery } from "../hooks.ts"
 
 import type { SelectedItems, RightClickTableEvent, RightClickDataEvent } from "./types.ts";
-import type { SqliteColumnInfo } from "@/sqlitedb.ts";
+import type { SqliteColumnInfo } from "@/src/sqlitedb.ts";
 
 import { TableDropdown } from "./components/TableDropdown.tsx";
 import { DataDropdown } from "./components/DataDropdown.tsx";
@@ -19,7 +19,6 @@ import ChevronUp from "./icons/ChevronUp.tsx";
 import ChevronDown from "./icons/ChevronDown.tsx";
 import OpenFullscreen from "./icons/OpenFullscreen.tsx";
 import CloseFullscreen from "./icons/CloseFullscreen.tsx";
-
 
 
 export const TableViewer = () => {

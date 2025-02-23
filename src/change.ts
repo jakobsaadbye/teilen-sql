@@ -209,12 +209,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                     // We make a 'counter' change that acts as a 'new' change
                     // that can get pushed to other clients so that they will reflect that the delete got cancelled.
                     // Its simply a re-play of the newest change so it won't have any effect.
-                    // @Investigate: Is this even necessary now? 
                     // NOTE: Should this be re-playing all the new changes???
-                    // const change = allNewChanges[0];
-                    // const changeAsUpdate: Change = {...change, type : 'update'};
-                    // await saveChanges(db, [changeAsUpdate]);
-                    // console.log(`Produced a counter change`, changeAsUpdate);
                     del.value = 0; // Mark delete as cancelled
                 }
 
@@ -689,8 +684,6 @@ const isLastWriter = (a: Change | undefined, b: Change | undefined) => {
     if (a.created_at > b.created_at) return true;
     if (a.created_at < b.created_at) return false;
 
-    // console.info(`Both changes were made at the same timestamp! Resolving by higher value`, a, b);
-
     if (a.value > b.value) return true;
     if (a.value < b.value) return false;
 
@@ -744,34 +737,6 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
     await db.execOrThrow(`UPDATE "crr_changes" SET value = ? WHERE tbl_name = ? AND pk = ? AND col_id = ?`, [position, tblName, pk, fiCol.col_id])
 
     changes[fiChangeIdx].value = position;
-}
-
-// @Cleanup @Temporary
-const todosWithSamePositions = async (db: SqliteDB) => {
-    return await db.select<any[]>(`
-        SELECT t1.*
-        FROM "todos" AS t1
-        WHERE EXISTS (
-            SELECT 1
-            FROM "todos" AS t2
-            WHERE t1.id != t2.id
-            AND t1.position = t2.position
-            AND t1.column_id = t2.column_id
-        )
-    `, []);
-}
-
-const columnsWithSamePositions = async (db: SqliteDB) => {
-    return await db.select<any[]>(`
-        SELECT c1.*
-        FROM "columns" AS c1
-        WHERE EXISTS (
-            SELECT 1
-            FROM "columns" AS c2
-            WHERE c1.id != c2.id
-            AND c1.position = c2.position
-        )
-    `, []);
 }
 
 const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: string, parentChanged: boolean, parentColId: string, positionColId: string, pk: string, afterId: string): Promise<string> => {

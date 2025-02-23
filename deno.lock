@@ -10,6 +10,7 @@
     "npm:@uiw/codemirror-theme-github@^4.23.7": "4.23.7",
     "npm:@uiw/react-codemirror@^4.23.7": "4.23.7_@babel+runtime@7.26.0_@codemirror+state@6.5.0_@codemirror+theme-one-dark@6.1.2_@codemirror+view@6.36.1_codemirror@6.0.1_react@19.0.0_react-dom@19.0.0__react@19.0.0_@codemirror+commands@6.7.1",
     "npm:react@19": "19.0.0",
+    "npm:react@^18.3.0": "18.3.1",
     "npm:react@^18.3.1": "18.3.1",
     "npm:tailwind-merge@*": "2.6.0",
     "npm:tailwind-merge@^2.6.0": "2.6.0",

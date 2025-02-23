@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { RightClickDataEvent, RightClickTableEvent, SelectedItems } from "@/react/TableViewer/types.ts";
-import { useDB, useQuery } from "../../hooks.ts";
-import { sqlDetermineOperation } from "../../../change.ts";
+import { useState } from "react";
+import { useDB } from "../../hooks.ts";
+import { sqlDetermineOperation } from "../../../../src/change.ts";
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from "@codemirror/view";
 import { sql as sqlLang, SQLite } from "@codemirror/lang-sql";

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { RightClickTableEvent } from "@/react/TableViewer/types.ts";
+import { RightClickTableEvent } from "../types.ts";
 import { useDB, useQuery } from "../../hooks.ts"
 import { SqliteColumnInfo } from "@/sqlitedb.ts";
 

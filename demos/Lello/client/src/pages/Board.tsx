@@ -2,7 +2,7 @@ import React from "react";
 import { useState } from 'react';
 import { useParams } from "react-router";
 import { useIcon } from '../hooks/useIcon.ts';
-import { useDB, useQuery } from '@teilen-sql/react/hooks.ts';
+import { useDB, useQuery } from '@teilen-sql-react';
 import { BoardRepo } from '../db/repo/boardRepo.ts';
 import { Todo, Column, BoardDetail, ColumnDetail } from '../db/types.ts';
 import { ControlBar } from '../components/ControlBar.tsx';

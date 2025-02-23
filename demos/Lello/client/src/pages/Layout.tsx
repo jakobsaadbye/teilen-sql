@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom';
-import { TableViewer } from '@teilen-sql/react/TableViewer/TableViewer.tsx'
+import { TableViewer } from "@teilen-sql-react"
 
 export const Layout = () => {
   return (

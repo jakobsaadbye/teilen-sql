@@ -298,6 +298,10 @@ export class SqliteDB {
     }
 }
 
+/**
+ * Creates a new local database
+ * @param name Name of the database file to store in OPFS
+ */
 export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
     const workerScriptPath = `./sqlite-worker.js?dbName=${name}`;
 

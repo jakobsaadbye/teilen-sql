@@ -1,3 +1,8 @@
+import { Database } from "jsr:@db/sqlite@0.12";
+import { CrrColumn } from "./change.ts";
+import { SqliteForeignKey } from "./sqlitedb.ts";
+import { ms } from "./ms.ts";
+
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
  * run the applyChanges() function the applyChanges() function knowing which database driver is being used 
@@ -7,12 +12,6 @@
  * so that it will be easier (and more typesafe) to make wrappers for other sqlite3
  * drivers other than Denos, e.g in node.js.
  */
-
-import { Database } from "jsr:@db/sqlite@0.12";
-import { CrrColumn } from "./change.ts";
-import { SqliteForeignKey } from "./sqlitedb.ts";
-import { ms } from "./ms.ts";
-
 export class SqliteDBWrapper {
     #db: Database
     pks: { [tblName: string]: string[] } = {};

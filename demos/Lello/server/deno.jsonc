@@ -4,6 +4,6 @@
         "start" : "deno run --allow-read --allow-ffi --allow-net --allow-env main.ts",
     },
     "imports": {
-        "@teilen-sql/": "../../../"
+        "@teilen-sql": "../../../index.ts"
     }
 }

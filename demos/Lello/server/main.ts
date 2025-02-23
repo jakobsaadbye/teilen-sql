@@ -4,10 +4,7 @@ import bodyParser from "npm:body-parser";
 import cors from "npm:cors"
 
 import { Database } from "jsr:@db/sqlite@0.12";
-import { SqliteDBWrapper } from "@teilen-sql/sqlitedbWrapper.ts"
-import { applyChanges } from "@teilen-sql/change.ts"
-import { SqliteDB } from "@teilen-sql/sqlitedb.ts";
-
+import { SqliteDB, SqliteDBWrapper, applyChanges } from "@teilen-sql"
 
 const PORT = 3000;
 
