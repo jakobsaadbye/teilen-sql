@@ -1,6 +1,6 @@
 {
   "name": "@jakobsaadbye/teilen-sql",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "A library for distributed sql in the browser",
   "main": "index.ts",
   "types": "index.d.ts",
@@ -9,6 +9,16 @@
     "index.d.ts",
     "src/**/*"
   ],
+  "exports": {
+    ".": {
+      "default" : "./index.ts",
+      "types": "./index.d.ts"
+    },
+    "./react": {
+      "default" : "./src/react/index.ts",
+      "types" : "./src/react/index.d.ts"
+    }
+  },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",
     "@codemirror/lang-sql": "^6.8.0",
