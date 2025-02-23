@@ -70,7 +70,7 @@ export const TableViewer = () => {
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             let handled = false;
-            if (e.ctrlKey && e.key === 'd') {
+            if (e.ctrlKey && e.key === 'i') {
                 setShow(prev => !prev);
                 handled = true;
             }
