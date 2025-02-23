@@ -1,6 +1,6 @@
 {
   "name": "@jakobsaadbye/teilen-sql",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A library for distributed sql in the browser",
   "main": "",
   "dependencies": {
@@ -9,7 +9,7 @@
     "@codemirror/view": "^6.36.1",
     "@uiw/codemirror-theme-github": "^4.23.7",
     "tailwind": "^4.0.0",
-    "react": "^19.0.0",
+    "react": "^18.3.1",
     "vite-plugin-svgr": "^4.3.0",
     "tailwind-merge": "^2.6.0"
   },
