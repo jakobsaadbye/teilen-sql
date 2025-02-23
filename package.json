@@ -1,11 +1,12 @@
 {
   "name": "@jakobsaadbye/teilen-sql",
-  "version": "1.0.9",
+  "version": "1.0.11",
   "description": "A library for distributed sql in the browser",
   "main": "index.ts",
   "types": "index.d.ts",
   "files": [
     "index.ts",
+    "index.d.ts",
     "src/**/*"
   ],
   "dependencies": {
