@@ -1,4 +1,4 @@
-import { assert } from "jsr:@std/assert@0.217/assert";
+import { assert } from "./utils.ts";
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 

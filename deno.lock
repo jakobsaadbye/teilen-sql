@@ -13,7 +13,8 @@
     "npm:tailwind-merge@*": "2.6.0",
     "npm:tailwind-merge@^2.6.0": "2.6.0",
     "npm:tailwind@4": "4.0.0",
-    "npm:vite-plugin-svgr@^4.2.0": "4.3.0_vite@6.0.3_@svgr+core@8.1.0__@babel+core@7.26.0"
+    "npm:vite-plugin-svgr@^4.2.0": "4.3.0_vite@6.0.3_@svgr+core@8.1.0__@babel+core@7.26.0",
+    "npm:vite-plugin-svgr@^4.3.0": "4.3.0_vite@6.0.3_@svgr+core@8.1.0__@babel+core@7.26.0"
   },
   "jsr": {
     "@std/assert@0.217.0": {

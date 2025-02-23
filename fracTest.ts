@@ -1,4 +1,4 @@
-import { assert } from "jsr:@std/assert@0.217/assert";
+import { assert } from "./utils.ts";
 import { BASE_10_DIGITS, BASE_52_DIGITS, fracMid } from "./frac.ts";
 
 const main = () => {

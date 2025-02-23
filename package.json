@@ -1,0 +1,31 @@
+{
+  "name": "@jakobsaadbye/teilen-sql",
+  "version": "1.0.0",
+  "description": "A library for distributed sql in the browser",
+  "main": "",
+  "dependencies": {
+    "tailwind": "^4.0.0",
+    "react": "^19.0.0",
+    "vite-plugin-svgr": "^4.3.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jakobsaadbye/teilen-sql.git"
+  },
+  "keywords": [
+    "sql",
+    "crdt",
+    "changelog"
+  ],
+  "author": "Jakob Saadbye",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jakobsaadbye/teilen-sql/issues"
+  },
+  "homepage": "https://github.com/jakobsaadbye/teilen-sql#readme"
+}

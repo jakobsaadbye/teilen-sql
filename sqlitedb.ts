@@ -1,7 +1,7 @@
 import { ms } from "./ms.ts"
 import { compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols, sqlExplainExec, pkEncodingOfRow, Change, reconstructRowFromHistory, Client, sqlDetermineOperation, sqlAsSelectStmt } from "./change.ts";
 import { insertTablesStmt } from "./tables.ts";
-import { assert } from "jsr:@std/assert@0.217/assert";
+import { assert } from "./utils.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
