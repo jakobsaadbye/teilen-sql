@@ -1,6 +1,6 @@
 {
   "name": "@jakobsaadbye/teilen-sql",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "A library for distributed sql in the browser",
   "main": "index.ts",
   "files": ["src/react/index.ts"],
