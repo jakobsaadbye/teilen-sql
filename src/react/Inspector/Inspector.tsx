@@ -329,7 +329,7 @@ export const Inspector = ({ children }) => {
                                 <OpenFullscreen className="w-6 h-6 fill-gray-500" />
                             </button>
                         )}
-                        <button className="cursor-default" onClick={() => setShow(false)} title="Close (ctrl+d)"><XIcon className="w-8 h-8 fill-gray-500" /></button>
+                        <button className="cursor-default" onClick={() => setShow(false)} title="Close (ctrl+i)"><XIcon className="w-8 h-8 fill-gray-500" /></button>
                     </div>
                 </header>
                 <div className="relative flex h-full w-full">
