@@ -86,16 +86,12 @@ https://www.youtube.com/watch?v=BghFgK6VJIE
 ### SqliteContext
 Teilen-sql provides the ```SqliteContext``` to give child components access to the db instance.
 ```jsx
-import { SqliteContext } from 'teilen-sql/react.ts'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.tsx'
-import { setupDb } from './db/setup.ts'
+import { createDb } from "@jakobsaadbye/teilen-sql"
+import { SqliteContext } from "@jakobsaadbye/teilen-sql/react"
 
-const db = await setupDb({ runMigrations: true });
+const db = await createDb("example.db");
 
-createRoot(document.getElementById('root')!).render(
+createRoot(document.getElementById('root') as HTMLElement).render(
   <StrictMode>
     <SqliteContext.Provider value={db}>
       <App />
@@ -136,3 +132,13 @@ type UseQueryOptions = {
     dependencies?: string[] // List of table names that if updated re-runs the query. Only needed to be specified if passed a function. Otherwise the affected table is infered from the sql query by sqlite EXPLAIN QUERY PLAN
 }
 ```
+
+## 🔍 Inspector
+
+Press ```ctrl+i``` anywhere to open the inspector. The inspector lets you inspect and modify the sqlite database that's running in the application.
+
+The design is heavily inspired by [TablePlus](https://tableplus.com/), with most of the same keybindings and features.
+
+Its build on the same reactivity system as the rest of the components, so any changes done via the inspector, is immediately reflected in the application.
+
+![Inspector](assets/Inspector.png)

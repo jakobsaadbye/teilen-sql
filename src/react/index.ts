@@ -1,2 +1,2 @@
-export { TableViewer } from "./TableViewer/TableViewer.tsx"
+export { Inspector } from "./Inspector/Inspector.tsx"
 export * from "./hooks.ts"

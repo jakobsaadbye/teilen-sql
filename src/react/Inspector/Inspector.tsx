@@ -21,7 +21,7 @@ import OpenFullscreen from "./icons/OpenFullscreen.tsx";
 import CloseFullscreen from "./icons/CloseFullscreen.tsx";
 
 
-export const TableViewer = () => {
+export const Inspector = ({ children }) => {
     const db = useDB();
 
     const [show, setShow] = useState(false);
@@ -297,9 +297,11 @@ export const TableViewer = () => {
 
     const height = fullscreen ? "h-full" : "h-96"
 
-    if (!show) return <></>
+    if (!show) return <>{children}</>
     return (
         <>
+            {children}
+            
             <TableDropdown tables={tables} event={tablesRightClicked} />
             <DataDropdown event={dataRightClicked} />
 

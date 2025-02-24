@@ -3,6 +3,25 @@ import { SqliteDB } from '../../src/sqlitedb.ts';
 import { Syncer } from "../../src/syncer.ts";
 import { sqlExplainQuery } from "../../src/utils.ts";
 
+/**
+ * Wrap the outermost component in the SqliteContext to allow child components to access the database which is required for all the hooks to work
+ * 
+ * Example:
+ * ```ts 
+    import { createDb } from "@jakobsaadbye/teilen-sql"
+    import { SqliteContext } from "@jakobsaadbye/teilen-sql/react"
+
+    const db = await createDb("example.db");
+
+    createRoot(document.getElementById('root') as HTMLElement).render(
+    <StrictMode>
+        <SqliteContext.Provider value={db}>
+            <App />
+        </SqliteContext.Provider>
+    </StrictMode>,
+    )
+ * ```
+ */
 export const SqliteContext = createContext<SqliteDB | null>(null);
 
 export const useDB = (): SqliteDB => {

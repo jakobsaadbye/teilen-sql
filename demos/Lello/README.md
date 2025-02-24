@@ -28,11 +28,3 @@ Then in both the client and server directory run:
 ```cmd
 deno run dev
 ```
-
-## Table Viewer
-
-Press ```ctrl+d``` anywhere to open the table viewer. The table viewer lets you inspect and modify the sqlite database thats running in the application.
-
-Its build on the same reactivity system as the rest of the components, so any changes done via the table viewer, is immediately reflected in the application.
-
-![Table Viewer](table-viewer.png)
