@@ -1,11 +1,9 @@
 // Client stuff
 export * from "./src/change.ts"
+export * from "./src/utils.ts"
 export { createDb, SqliteDB } from "./src/sqlitedb.ts"
-export { Syncer } from "./src/syncer.ts"
-
-// React and framework stuff is imported from respective module. 
-// e.g `import { } from "@teilen-sql/react"`
-
+export * from "./src/syncer.ts"
+export { insertCrrTablesStmt } from "./src/tables.ts"
 
 // Server stuff
 export { SqliteDBWrapper } from "./src/sqlitedbWrapper.ts"

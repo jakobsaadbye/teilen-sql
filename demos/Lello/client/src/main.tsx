@@ -11,9 +11,9 @@ import { tables } from "./db/tables.ts";
 const db = await createDb('main');
 await db.exec(tables, []);
 
-await db.upgradeTableToCrr("boards", "10s");
-await db.upgradeTableToCrr("todos", "10s");
-await db.upgradeTableToCrr("columns", "10s");
+await db.upgradeTableToCrr("boards");
+await db.upgradeTableToCrr("todos");
+await db.upgradeTableToCrr("columns");
 await db.upgradeColumnToFractionalIndex("todos", "position", "column_id");
 await db.upgradeColumnToFractionalIndex("columns", "position", "board_id");
 await db.finalizeUpgrades();

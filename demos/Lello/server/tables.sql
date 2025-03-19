@@ -42,7 +42,6 @@ create table if not exists crr_columns(
     type text not null,
     fk text,
     fk_on_delete text,
-    delete_wins_after bigint,
     parent_col_id text,
     primary key(tbl_name, col_id)
 );

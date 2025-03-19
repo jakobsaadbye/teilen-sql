@@ -87,11 +87,11 @@ const clearBoard = async (db: SqliteDB, boardId: string) => {
 }
 
 const pullChanges = async (syncer: Syncer) => {
-    await syncer.pullChanges();
+    await syncer.pullChangesHttp();
 }
 
 const pushChanges = async (syncer: Syncer) => {
-    await syncer.pushChanges();
+    await syncer.pushChangesHttp();
 }
 
 const moveTodo = async (db: SqliteDB, boardId: string) => {

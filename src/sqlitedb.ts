@@ -1,7 +1,7 @@
 import { ms } from "./ms.ts"
-import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory } from "./change.ts";
+import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change } from "./change.ts";
 import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt } from "./utils.ts"
-import { insertTablesStmt } from "./tables.ts";
+import { insertCrrTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
@@ -34,17 +34,23 @@ export class SqliteDB {
     siteId = "";
     pks: { [tblName: string]: string[] } = {};
     crrColumns: { [tbl_name: string]: CrrColumn[] } = {};
+    channelTableChange: BroadcastChannel
+    ready: boolean
 
     #debug = false;
     #mp: MessagePort
-    #channelTableChange: BroadcastChannel
+    #capturingChanges: boolean
+    #deleteRowidToPk: {[rowid: string] : string}
 
     constructor(name:string, mp: MessagePort) {
         this.name = name;
         this.#mp = mp;
+        this.#capturingChanges = false;
+        this.#deleteRowidToPk = {};
+        this.ready = false;
 
         // Broadcast channel to notify dependent queries to re-run
-        this.#channelTableChange = new BroadcastChannel("table_change");
+        this.channelTableChange = new BroadcastChannel("table_change");
 
         // Broadcast for update_hook()
         const bcUpdateHook = new BroadcastChannel("update_hook");
@@ -54,15 +60,25 @@ export class SqliteDB {
         this.#mp.addEventListener('message', (event) => {
             if (event.data.type === 'change') {
                 bcUpdateHook.postMessage(event.data.change);
+                this.onChange(event.data.change);
             }
             bc.postMessage(event.data);
         });
 
         // Enable foreign key constraints
-        this.exec(`PRAGMA foreign_keys = ON`, []);
+        // this.exec(`PRAGMA foreign_keys = ON`, []);
+    }
 
-        // Extract the primary keys of tables to be used in changes
-        this.extractPks();
+    async onChange(change: SqliteUpdateHookChange) {
+        if (this.crrColumns[change.tableName]) {
+            if (this.#capturingChanges) {
+                const changes = await this.generateChangesFromUpdate(change, this.#deleteRowidToPk);
+                
+                await saveFractionalIndexCols(this, changes);
+                await saveChanges(this, changes);
+                await compactChanges(this, changes);
+            }
+        }
     }
 
     async close(): Promise<Error> {
@@ -70,7 +86,7 @@ export class SqliteDB {
         if (!data.error) {
             console.log(`Closed database connection ...`);
         }
-        this.#channelTableChange.close();
+        this.channelTableChange.close();
         return data.error;
     }
 
@@ -78,7 +94,7 @@ export class SqliteDB {
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
-            this.#channelTableChange.postMessage(tblName);
+            this.channelTableChange.postMessage(tblName);
         };
         if (data.error) {
             console.error(`Failed executing`, sql, params, data.error);
@@ -96,6 +112,11 @@ export class SqliteDB {
             const tblName = sqlExplainExec(sql);
             const operation = sqlDetermineOperation(sql);
 
+            if (this.crrColumns[tblName] === undefined) {
+                console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it`);
+                return;
+            }
+
             const deleteRowidToPk: {[rowid: string] : string} = {};
             if (operation === 'delete') {
                 // Turn the delete stmt into a select stmt to get which rows are being affected.
@@ -105,28 +126,34 @@ export class SqliteDB {
                     const pk = pkEncodingOfRow(this, tblName, row);
                     deleteRowidToPk['' + row.rowid] = pk;
                 }
+                this.#deleteRowidToPk = deleteRowidToPk;
             }
 
+            this.#capturingChanges = true;
             await this.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
-            const updateHook = new BroadcastChannel("update_hook");
-            const change: SqliteUpdateHookChange = await new Promise((resolve, reject) => {
-                updateHook.addEventListener('message', (event) => {
-                    resolve(event.data);
-                });
-                this.exec(sql, params, { notify: false }).catch(err => reject(err));
-            });
-
-            const changeSet = await this.getChangeSetFromUpdate(change, deleteRowidToPk);
-            await saveFractionalIndexCols(this, changeSet);
-
-            await saveChanges(this, changeSet);
-            await compactChanges(this, changeSet);
+            await this.exec(sql, params, { notify: false });
             await this.exec(`COMMIT;`, [], { notify: false });
+            this.#capturingChanges = false;
+
+            // const updateHook = new BroadcastChannel("update_hook");
+            // const change: SqliteUpdateHookChange = await new Promise((resolve, reject) => {
+            //     updateHook.addEventListener('message', (event) => {
+            //         resolve(event.data);
+            //     });
+            //     this.exec(sql, params, { notify: false }).catch(err => reject(err));
+            // });
+
+            // const changeSet = await this.generateChangesFromUpdate(change, deleteRowidToPk);
+            // await saveFractionalIndexCols(this, changeSet);
+            // await saveChanges(this, changeSet);
+            // await compactChanges(this, changeSet);
+
+            
 
             // @Incomplete - A delete might cascade over multiple tables, so only notifying hooks of the deleted row is not sufficient.
             // We should get all the table names that are affected by the delete
-            this.#channelTableChange.postMessage(tblName);
-            this.#channelTableChange.postMessage("crr_changes");
+            this.channelTableChange.postMessage(tblName);
+            this.channelTableChange.postMessage("crr_changes");
         } catch (e) {
             console.error(e);
             return e;
@@ -164,17 +191,16 @@ export class SqliteDB {
         }
     }
 
-    async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
-        const dwaMs = ms(deleteWinsAfter);
+    async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
         const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${dwaMs}', null)`;
-            else return `('${tblName}', '${c.name}', 'lww', null, null, '${dwaMs}', null)`;
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
+            else return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
         }).join(',');
         const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, delete_wins_after, parent_col_id)
+            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
             VALUES ${values}
             ON CONFLICT DO NOTHING
         `, []);
@@ -190,9 +216,14 @@ export class SqliteDB {
         if (err) return console.error(err);
     }
 
-    async finalizeUpgrades() {
+    async finalize() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
+
+        // Extract the primary keys of tables to be used in changes
+        await this.extractPks();
+
+        this.ready = true;
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
@@ -201,7 +232,7 @@ export class SqliteDB {
         return fk
     }
 
-    private async getChangeSetFromUpdate(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
+    private async generateChangesFromUpdate(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -255,7 +286,7 @@ export class SqliteDB {
                         // :ModifyForeignKeyInserts
                         // @Temporary - If the update changes the foreign-key, also update the original insert change
                         // NOTE: We might in the future have a structure such that each column of a row
-                        // only has 1 associated change row. Then there couldn't be another change to the foreign-key
+                        // only has 1 associated change type for a row (instead of insert and update). Then there couldn't be another change to the foreign-key
                         const fkCols = this.crrColumns[change.tableName].filter(col => col.fk);
                         if (fkCols.length === 0) continue;
                         const fkCol = fkCols.find(col => col.col_id === key);
@@ -333,7 +364,7 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
     const db = new SqliteDB(name, port1);
 
     // Setup tables
-    const err = await db.exec(insertTablesStmt, []);
+    const err = await db.exec(insertCrrTablesStmt, []);
     if (err) {
         throw new Error("Failed to insert necessary tables. " + err);
     }

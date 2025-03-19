@@ -16,8 +16,8 @@ export const ControlBar = ({ boardId, className }: Props) => {
     const changeCount = useQuery<number | undefined>(getCurrentChangeCount, []).data;
 
     const syncer = useSyncer("http://127.0.0.1:3000/changes");
-    const pullChanges = () => syncer.pullChanges();
-    const pushChanges = () => syncer.pushChanges();
+    const pullChanges = () => syncer.pullChangesHttp();
+    const pushChanges = () => syncer.pushChangesHttp();
 
     const { ArrowUp, ArrowDown, Rabbit, Block } = useIcon();
 

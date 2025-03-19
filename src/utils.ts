@@ -37,6 +37,7 @@ export const sqlAsSelectStmt = (sql: string) => {
     }
 }
 
+/* Generates a comma seperated list of placeholders for the length of the array */
 export const sqlPlaceholders = (a: any[]) => {
     return `${a.map(_ => `?`).join(',')}`;
 }
@@ -115,7 +116,7 @@ export const sqlExplainQuery = async (db: SqliteDB, sql: string): Promise<string
 
 export const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
     const pkCols = db.pks[tblName];
-    assert(pkCols && pkCols.length > 0);
+    assert(pkCols && pkCols.length > 0, `No known primary-keys for table '${tblName}'`);
     return Object.entries(row).filter(([colId, _]) => pkCols.includes(colId)).map(([_, value]) => value).join('|');
 }
 
@@ -123,4 +124,8 @@ export const assert = (expr: unknown, msg?: string): asserts expr => {
     if (!expr) {
         throw new Error(msg ?? "Assertion failed");
     }
+}
+
+export const unique = (arr: any[]) => {
+    return [...new Set(arr)];
 }

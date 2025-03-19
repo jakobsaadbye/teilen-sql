@@ -1,12 +1,11 @@
 import { Database } from "jsr:@db/sqlite@0.12";
 import { CrrColumn } from "./change.ts";
 import { SqliteForeignKey } from "./sqlitedb.ts";
-import { ms } from "./ms.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
- * run the applyChanges() function the applyChanges() function knowing which database driver is being used 
- * for the backend
+ * run the applyChanges() function without the applyChanges() function knowing which database driver is being used 
+ * underneath
  * 
  * NOTE: We might make the SqliteDB into some kind of typescript interface
  * so that it will be easier (and more typesafe) to make wrappers for other sqlite3
@@ -20,10 +19,7 @@ export class SqliteDBWrapper {
     constructor(db: Database) {
         this.#db = db;
 
-        this.exec(`PRAGMA foreign_keys = ON`, []);
-
-        this.extractPks().catch(e => console.error(e));
-        this.finalizeUpgrades().catch(e => console.error(e));
+        this.exec(`PRAGMA foreign_keys = OFF`, []);
     }
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
@@ -49,6 +45,16 @@ export class SqliteDBWrapper {
         return await this.#db.prepare(sql).all(...params) as T;
     }
 
+    async selectWithError<T>(sql: string, params: any[]): Promise<{ data: T, error?: Error }> {
+        // console.log(sql, params);
+        try {
+            const data = await this.#db.prepare(sql).all(...params) as T;
+            return { data, error: undefined };
+        } catch (e) {
+            return { data: undefined, error: e };
+        }
+    }
+
     async upgradeAllTablesToCrr() {
         const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
@@ -58,17 +64,16 @@ export class SqliteDBWrapper {
         }
     }
 
-    async upgradeTableToCrr(tblName: string, deleteWinsAfter: string = '10s') {
-        const deleteWinsAfterMs = ms(deleteWinsAfter);
+    async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
         const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', '${deleteWinsAfterMs}', null)`;
-            else return `('${tblName}', '${c.name}', 'lww', null, null, '${deleteWinsAfterMs}', null)`;
+            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
+            else return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
         }).join(',');
         const err = await this.exec(`
-                INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, delete_wins_after, parent_col_id)
+                INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
                 VALUES ${values}
                 ON CONFLICT DO NOTHING
             `, []);
@@ -84,9 +89,11 @@ export class SqliteDBWrapper {
         if (err) return console.error(err);
     }
 
-    private async finalizeUpgrades() {
+    private async finalize() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
+
+        await this.extractPks();
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {

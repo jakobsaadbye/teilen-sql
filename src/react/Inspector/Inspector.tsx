@@ -30,7 +30,7 @@ export const Inspector = ({ children }) => {
     const [mode, setMode] = useState<'data' | 'structure' | 'query'>('data');
     const [fullscreen, setFullscreen] = useState(localStorage.getItem("tw_fullscreen") ?? "");
     const [selectedItems, setSelectedItems] = useState<SelectedItems>(undefined);
-    const [tablesRightClicked, setTablesRightClicked] = useState<RightClickTableEvent>(undefined);
+    const [tableRightClicked, setTableRightClicked] = useState<RightClickTableEvent>(undefined);
     const [dataRightClicked, setDataRightClicked] = useState<RightClickDataEvent>(undefined);
     const [st, setSt] = useState<string | undefined>(undefined);
     const [orderBy, setOrderBy] = useState({});
@@ -85,18 +85,22 @@ export const Inspector = ({ children }) => {
                         handled = true;
                     }
                 }
+
                 if (e.key === 'Escape') {
                     deselectAll();
                     handled = true;
                 }
+
                 if (e.metaKey && e.key === 'a' && !editingColumn && resultTableFocused) {
                     selectAll();
                     handled = true;
                 }
-                if (e.ctrlKey && e.key === 's') {
-                    setSqlEditorOpen(prev => !prev);
-                    handled = true;
-                }
+
+                // if (e.ctrlKey && e.key === 's') {
+                //     setSqlEditorOpen(prev => !prev);
+                //     handled = true;
+                // }
+
                 if (e.ctrlKey && e.key === 'f') {
                     toggleFullscreen();
                     handled = true;
@@ -187,7 +191,7 @@ export const Inspector = ({ children }) => {
 
     const deselectAll = () => {
         setSelectedItems(undefined);
-        setTablesRightClicked(undefined);
+        setTableRightClicked(undefined);
         setDataRightClicked(undefined);
         setEditingColumn(undefined);
     }
@@ -203,14 +207,29 @@ export const Inspector = ({ children }) => {
         e.preventDefault();
         e.stopPropagation();
         if (e.type === "click") {
-            setSt(tables[tableIndex].name);
-            setSelectedItems({ type: 'table', items: [tableIndex] });
+            if (e.shiftKey) {
+                if (selectedItems === undefined || selectedItems.type !== 'table') {
+                    setSelectedItems({ type: 'table', items: [tableIndex] });
+                } else {
+                    const anchorA = selectedItems.items[0]
+                    const anchorB = tableIndex;
+                    const between = [];
+                    if (anchorA > anchorB) for (let n = anchorA; n > anchorB; n--) between.push(n);
+                    else for (let n = anchorA; n < anchorB; n++) between.push(n);
+
+                    setSelectedItems({ type: 'table', items: [anchorA, ...between, anchorB] });
+                }
+            } else {
+                deselectAll();
+                setSt(tables[tableIndex].name);
+                setSelectedItems({ type: 'table', items: [tableIndex] });
+            }
             if (mode === 'query') {
                 setMode('data');
             }
         }
         if (e.type === "contextmenu") {
-            setTablesRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
+            setTableRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
         }
     }
 
@@ -295,6 +314,11 @@ export const Inspector = ({ children }) => {
         return true;
     }
 
+    const deleteEntireDatabase = async () => {
+        const opfsRoot = await navigator.storage.getDirectory();
+        await opfsRoot.removeEntry(db.name);
+    }
+
     const height = fullscreen ? "h-full" : "h-96"
 
     if (!show) return <>{children}</>
@@ -302,21 +326,28 @@ export const Inspector = ({ children }) => {
         <>
             {children}
             
-            <TableDropdown tables={tables} event={tablesRightClicked} />
+            <TableDropdown tables={tables} event={tableRightClicked} />
             <DataDropdown event={dataRightClicked} />
 
             <div
-                className={`absolute bottom-0 w-full ${height} rounded-md bg-white cursor-default overflow-clip`}
+                className={`absolute bottom-0 border-t-1 border-t-gray-400 w-full ${height} rounded-md bg-white cursor-default overflow-clip`}
                 tabIndex={0}
                 onClick={deselectAll}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
             >
                 <header className="flex p-1 justify-between items-center bg-gray-300 border-b border-gray-400">
-                    <div>
-                        <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Open SQL Editor (ctrl+s)">
-                            <p className="text-sm font-medium">SQL</p>
-                        </button>
+                    <div className="flex gap-x-2">
+                        <div>
+                            <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Open SQL Editor (ctrl+s)">
+                                <p className="text-sm font-medium">SQL</p>
+                            </button>
+                        </div>
+                        <div>
+                            <button onClick={() => deleteEntireDatabase()} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Delete database">
+                                <p className="text-sm font-medium">DEL</p>
+                            </button>
+                        </div>
                     </div>
                     <div className="flex space-x-2 items-center">
                         {fullscreen && (
@@ -358,7 +389,7 @@ export const Inspector = ({ children }) => {
                                     {mode === 'data' && columns && (columns.map((c, i) => (
                                         <th onClick={() => orderByColumn(c.name)} key={i} className="border-r border-gray-50">
                                             <div className="flex justify-center items-center">
-                                                <p className="text-center">{c.name}</p>
+                                                <p className="text-center font-semibold">{c.name}</p>
                                                 {orderBy[st]?.columnName === c.name && orderBy[st]?.direction === 'ASC' && <ChevronUp className="w-4 h-4 fill-gray-600" />}
                                                 {orderBy[st]?.columnName === c.name && orderBy[st]?.direction === 'DESC' && <ChevronDown className="w-4 h-4 fill-gray-600" />}
                                             </div>

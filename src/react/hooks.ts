@@ -23,15 +23,15 @@ import { sqlExplainQuery } from "../../src/utils.ts";
  * ```
  */
 export const SqliteContext = createContext<SqliteDB | null>(null);
+export const SyncContext = createContext<Syncer | null>(null);
 
 export const useDB = (): SqliteDB => {
     const db = useContext(SqliteContext);
     return db!;
 }
 
-export const useSyncer = (endpoint: string): Syncer => {
-    const db = useDB();
-    return new Syncer(db, endpoint);
+export const useSyncer = (): Syncer => {
+    return useContext(SyncContext)!;
 }
 
 // A QueryFunc is just any function that accepts the db as the first argument and returns data. 

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { RightClickTableEvent } from "../types.ts";
-import { useDB, useQuery } from "../../hooks.ts"
-import { SqliteColumnInfo } from "@/sqlitedb.ts";
+import { useDB } from "../../hooks.ts"
+import { SqliteColumnInfo } from "../../../sqlitedb.ts";
 
 type TDProps = {
     tables: { name: string }[]
@@ -50,9 +50,18 @@ export const TableDropdown = ({ tables, event }: TDProps) => {
         URL.revokeObjectURL(link.href);
     }
 
+    const deleteTable = async () => {
+        if (event === undefined) return
+
+        const tblName = tables[event.tableIndex].name;
+
+        await db.execOrThrow(`DROP TABLE IF EXISTS "${tblName}"`, []);
+    }
+
     const items = [
         { name: "Export SQL", onClick: exportSql },
-        { name: "Export JSON", onClick: exportJson }
+        { name: "Export JSON", onClick: exportJson },
+        { name: "Delete", onClick: deleteTable }
     ];
 
     useEffect(() => {

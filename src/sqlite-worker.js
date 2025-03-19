@@ -40,7 +40,7 @@ Promise.resolve().then(async () => {
         messagePort
     };
 
-    // Handle simple database changes
+    // Notify of a database changes
     const handleChange = (updateType, dbName, tblName, rowid) => {
         let type;
         switch (updateType) {

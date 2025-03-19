@@ -1,4 +1,4 @@
-export const insertTablesStmt = `
+export const insertCrrTablesStmt = `
     BEGIN;
 
     CREATE TABLE IF NOT EXISTS crr_changes(
@@ -17,12 +17,10 @@ export const insertTablesStmt = `
 
     CREATE TABLE IF NOT EXISTS crr_columns(
         tbl_name text not null,
-
         col_id text not null,
         type text not null,
         fk text,
         fk_on_delete text,
-        delete_wins_after bigint,
         parent_col_id text,
         primary key(tbl_name, col_id)
     );

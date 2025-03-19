@@ -1,4 +1,4 @@
-import { assert, pkEncodingOfRow, sqlPlaceholders } from "./utils.ts";
+import { assert, pkEncodingOfRow, sqlPlaceholders, unique } from "./utils.ts";
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
@@ -20,7 +20,6 @@ export type CrrColumn = {
     type: 'lww' | 'fractional_index'
     fk: string | null // format is 'table|col_id'
     fk_on_delete: 'CASCADE' | 'RESTRICT'
-    delete_wins_after: bigint
     parent_col_id: string // set if fractional_index otherwise empty string
 };
 
@@ -29,11 +28,11 @@ export type OpType = 'insert' | 'update' | 'delete'
 export type Change = {
     type: OpType
     tbl_name: string
-    col_id: string | null, // null when type is delete
-    pk: string,
-    value: any | null // when type is delete, value is either 0 - active delete, 1 - cancelled delete
-    site_id: string
-    created_at: number
+    col_id: string,     // 'tombstone' when type is delete
+    pk: string,         // primary-key of the changed row. If primary-key is composed of multiple columns, the format is "col_1|col_2|...|col_n"
+    value: any          // when type is delete, value is either 1 (deleted) or 0 (not deleted)
+    site_id: string     // client that made the change
+    created_at: number  
     applied_at: number
 };
 
@@ -55,9 +54,10 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     // :ModifyForeignKeyInserts
     const fkColsPerTable: {[table: string] : CrrColumn[]} = {}; 
     for (const table of touchedTables) {
-        fkColsPerTable[table] = db.crrColumns[table].filter(col => col.fk);
+        fkColsPerTable[table] = db.crrColumns[table]?.filter(col => col.fk) ?? [];
     };
 
+    const appliedChanges = [] as Change[];
     for (const changeSet of changeSets) {
         const type = changeSet[0].type;
         switch (type) {
@@ -65,8 +65,9 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 const insert = changeSet;
 
                 await saveChanges(db, insert);
+                appliedChanges.push(...insert);
             
-                const insertRow = await doResurrection(db, insert);
+                const insertRow = true // await doResurrection(db, insert); // nocheckin
 
                 if (insertRow) {
                     const tblName = insert[0].tbl_name;
@@ -89,11 +90,11 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk = ? ORDER BY created_at DESC`, [pk]);
                 const fkCols = fkColsPerTable[tblName];
 
-                const changesToApply: Change[] = [];
+                const updatesToApply: Change[] = [];
                 for (const update of updateSet) {
                     const prevChange = currentChanges.find(change => change.col_id === update.col_id);
                     if (isLastWriter(update, prevChange)) {
-                        changesToApply.push(update);
+                        updatesToApply.push(update);
 
                         // :ModifyForeignKeyInserts
                         if (fkCols.length > 0) {
@@ -104,16 +105,17 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                         }
                     }
                 }
-                if (changesToApply.length === 0) continue;
+                if (updatesToApply.length === 0) continue;
 
-                await saveChanges(db, changesToApply);
+                await saveChanges(db, updatesToApply);
+                appliedChanges.push(...updatesToApply);
 
-                const applyChangesToRow = await doResurrection(db, updateSet);
+                const applyChangesToRow = true // await doResurrection(db, updateSet); // nocheckin
                 if (applyChangesToRow) {
-                    const values = changesToApply.map(c => c.value);
+                    const values = updatesToApply.map(c => c.value);
                     const stmt = `
                         UPDATE "${tblName}"
-                        SET ${changesToApply.map(c => `${c.col_id} = ?`).join(",")}
+                        SET ${updatesToApply.map(c => `${c.col_id} = ?`).join(",")}
                         WHERE ${pkEqual(db, tblName, pk)}
                     `;
                     await db.execOrThrow(stmt, values);
@@ -154,7 +156,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
             case "delete": {
 
                 // @Speed @LowhangingFruit - We really want to look into caching the way we look up if any changes has been
-                // made to child rows.
+                // made to child rows as this is right now sloooooow.
 
                 const del = changeSet[0];
 
@@ -202,7 +204,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 }
     
                 const allNewChanges = [...newChangesToThisRow, ...newChildChanges];
-                if (allNewChanges.length === 0) {
+                if (true || allNewChanges.length === 0) { // nocheckin
                     await db.execOrThrow(`DELETE FROM "${del.tbl_name}" WHERE ${pkEqual(db, del.tbl_name, del.pk)}`, []);
                 } else {
                     // We ignore the delete.
@@ -213,7 +215,8 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                     del.value = 0; // Mark delete as cancelled
                 }
 
-                saveChanges(db, changeSet);
+                await saveChanges(db, changeSet);
+                appliedChanges.push(...changeSet);
             } break;
         }
     }
@@ -227,6 +230,8 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     await updateLastPulledAtFromPeers(db, changes);
 
     await db.exec(`COMMIT;`, []);
+
+    return appliedChanges;
 }
 
 export const getChildChanges = async (db: SqliteDB, fkRelation: FkRelation) => {
@@ -479,10 +484,6 @@ const doResurrection = async (db: SqliteDB, changeSet: Change[]) => {
     return true;
 }
 
-const unique = (arr: any[]) => {
-    return [...new Set(arr)];
-}
-
 const insertRows = async (db: SqliteDB, tblName: string, rows: any[]) => {
     if (rows.length === 0) return;
 
@@ -517,7 +518,7 @@ export const reconstructRowFromHistory = async (db: SqliteDB, tblName: string, p
 const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][], sendByError: boolean) => {
     const fiChanges = changes.filter(changeSet => {
         const tblName = changeSet[0].tbl_name;
-        const fiCols = db.crrColumns[tblName].filter(col => col.type === 'fractional_index');
+        const fiCols = db.crrColumns[tblName]?.filter(col => col.type === 'fractional_index') ?? [];
         if (fiCols.length === 0) return false;
         return changeSet.find(change => fiCols.find(col => col.col_id === change.col_id) !== undefined) !== undefined;
     });
@@ -563,11 +564,6 @@ const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][], s
         else tables[tblName] = { [parentId]: { parentColId, parentId, posColId } };
     }
 
-    // @Cleanup
-    if (sendByError) {
-        console.log(`fixFractionalIndexCollisions(), Tables: `, tables);
-    }
-
     // Try search for collisions on the same positions
     for (const [tblName, lists] of Object.entries(tables)) {
         for (const list of Object.values(lists)) {
@@ -577,11 +573,6 @@ const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][], s
 
             const items = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${parentColId} = '${parentId}' ORDER BY ${posColId} ASC`, []);
             if (items.length === 0 || items.length === 1) continue; // Don't put a return here if you want to succeed in the software industry ... jsaad - 29 jan. 2025
-
-            // @Cleanup
-            if (sendByError) {
-                console.log(`Items in '${tblName}'`, items);
-            }
 
             const itemPks = items.map(item => pkEncodingOfRow(db, tblName, item));
             const lastChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk IN (${sqlPlaceholders(itemPks)}) AND col_id = ? ORDER BY created_at DESC`, [...itemPks, posColId]);
