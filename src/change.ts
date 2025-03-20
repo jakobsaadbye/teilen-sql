@@ -515,7 +515,7 @@ export const reconstructRowFromHistory = async (db: SqliteDB, tblName: string, p
     return constructed;
 }
 
-const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][], sendByError: boolean) => {
+const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]) => {
     const fiChanges = changes.filter(changeSet => {
         const tblName = changeSet[0].tbl_name;
         const fiCols = db.crrColumns[tblName]?.filter(col => col.type === 'fractional_index') ?? [];
@@ -703,8 +703,8 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
     const parentColId = fiCol.parent_col_id;
     let afterId = changes.find(c => c.col_id === fiCol.col_id)?.value ?? null
     assert(afterId !== null);
-    if (typeof (afterId) === 'number') afterId = afterId.toString();
-
+    if (typeof afterId === "number") afterId = afterId.toString();
+    
     let parentChanged = false;
     let parentId = changes.find(c => c.col_id === fiCol.parent_col_id)?.value ?? null // null if only an update to the same list. We need to grab the parentId of the row that changed in order to get the other items with the same parent
     if (parentId !== null) parentChanged = true;
@@ -713,11 +713,15 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
         assert(item !== undefined);
         parentId = item[parentColId];
     }
+    if (changeType === "insert") parentChanged = false;
+    if (typeof parentId === "number") parentId = parentId.toString();
 
     const position = await getFracIdxPosition(db, tblName, parentId, parentChanged, parentColId, positionColName, pk, afterId);
-    if (position === "-1" || typeof (position) === "number") console.error("Position value is corrupted", position);
+    if (position === "|prepend" || position === "|append") console.error("Position value is corrupted", position);
 
     const stmt = `UPDATE "${tblName}" SET ${positionColName} = '${position}' WHERE ${pkEqual(db, tblName, pk)};`;
+    console.log(stmt);
+    
     const err = await db.exec(stmt, [], { notify: false });
     if (err) {
         console.error(err);
@@ -731,21 +735,23 @@ export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) =
 }
 
 const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: string, parentChanged: boolean, parentColId: string, positionColId: string, pk: string, afterId: string): Promise<string> => {
-    const pci = positionColId;
+    const pcid = positionColId;
 
     const comparePk = (item: any, pkB: string): boolean => {
         const pkA = pkEncodingOfRow(db, tblName, item);
         return pkA === pkB;
     }
 
-    // @Speed - Only select the pk, position and parent column, no need to select all the fields
     let items = [];
     if (parentChanged) {
         items = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${parentColId} = ? AND ${pkNotEqual(db, tblName, pk)} ORDER BY ${positionColId} ASC`, [parentId]);
     } else {
         items = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${parentColId} = ? ORDER BY ${positionColId} ASC`, [parentId]);
     }
-    if (items.length === 0) return fracMid("[", "]");
+    if (items.length === 0 || items.length === 1) return fracMid("[", "]");
+
+    console.log(items);
+    
 
 
     // @Hack - Inject the previous position of the changed item into itself, as the previous position is lost on save.
@@ -756,23 +762,27 @@ const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: strin
             assert(changedItemIdx !== -1);
             if (typeof (prevChange.value) === 'number') prevChange.value = prevChange.value.toString();
             items[changedItemIdx][positionColId] = prevChange.value;
-            items.sort((a, b) => a[pci] < b[pci] ? -1 : +1);
+            items.sort((a, b) => a[pcid] < b[pcid] ? -1 : +1);
         }
     }
 
-    if (afterId === "-1") { // Prepend
-        if (comparePk(items[0], pk)) return items[0][pci]; // Placing head after itself
-        return fracMid("[", items[0][pci]);
+    if (afterId === "|prepend") {
+        const first = items[0];
+        const firstPos = first[pcid];
+        if (comparePk(first, pk)) return firstPos; // Placing head after itself
+        return fracMid("[", firstPos);
     }
-    else if (afterId === "1") { // Append
-        if (comparePk(items[items.length - 1], pk)) return items[items.length - 1][pci]; // Placing last item after itself
-        return fracMid(items[items.length - 1][pci], "]");
+    else if (afterId === "|append") {
+        const last = items[items.length - 2];
+        const lastPos = last[pcid];
+        if (comparePk(last, pk)) return lastPos; // Placing last item after itself
+        return fracMid(lastPos, "]");
     }
     else { // Insert after item id
         if (afterId === pk) { // Placing after ourselves
             const thisItem = items.find(item => comparePk(item, pk));
             assert(thisItem !== undefined);
-            return thisItem![pci];
+            return thisItem![pcid];
         }
 
         const afterIdx = items.findIndex(item => comparePk(item, afterId));
@@ -780,14 +790,14 @@ const getFracIdxPosition = async (db: SqliteDB, tblName: string, parentId: strin
         assert(afterIdx !== -1 && afterItem !== undefined);
 
         if (afterIdx === items.length - 1) { // Append last item
-            return fracMid(items[items.length - 1][pci], "]");
+            return fracMid(items[items.length - 1][pcid], "]");
         } else { // In-between
             const itemA = items[afterIdx + 0];
             const itemB = items[afterIdx + 1];
 
-            if (comparePk(itemB, pk)) return itemB[pci]; // Placing above ourselves
+            if (comparePk(itemB, pk)) return itemB[pcid]; // Placing above ourselves
 
-            return fracMid(itemA[pci], itemB[pci]);
+            return fracMid(itemA[pcid], itemB[pcid]);
         }
     }
 }
@@ -927,6 +937,10 @@ const pkNotEqual = (db: SqliteDB, tblName: string, pk: string) => {
 }
 
 const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, value: any][] => {
+    if (typeof pk !== "string") {
+        console.error(`Primary-keys other than strings are not yet supported. Received primary-key with value ${pk} of type ${typeof pk}`);
+    }
+
     const pkCols = db.pks[tblName];
     assert(pkCols.length > 0);
     const values = pk.split('|');

@@ -56,21 +56,21 @@ await db.upgradeColumnToFractionalIndex("todos", "position", "column_id");
 ```
 ```sql
 -- The 'position' column now accepts three values:
---   1       : Append to the list
---  -1       : Prepend to the list
---  after_id : The id to place this row after 
-INSERT INTO "todos" VALUES (1, 'Buy milk', '1')
-INSERT INTO "todos" VALUES (2, 'Eat lunch', '1')
-INSERT INTO "todos" VALUES (3, 'Plan dinner', 1) -- place after row 1
+--  '|append'       : Append to the list
+--  '|prepend'      : Prepend to the list
+--  after_id        : The primary-key to place this row after 
+INSERT INTO "todos" VALUES (1, 'Buy milk', '|append')
+INSERT INTO "todos" VALUES (2, 'Eat lunch', '|append')
+INSERT INTO "todos" VALUES (3, 'Plan dinner', '1') -- place after row with id 1 (in-between 1 and 2)
 
 ┌─────────────────────────────────┐
 │ id │      title      │ position │
 ├─────────────────────────────────┤
-│ 1  │ 'Buy milk'      │   'a'    │
+│ '1'  │ 'Buy milk'      │   'a'  │
 ├─────────────────────────────────┤
-│ 3  │ 'Plan dinner'   │   'h'    │
+│ '3'  │ 'Plan dinner'   │   'h'  │
 ├─────────────────────────────────┤
-│ 2  │ 'Eat lunch'     │   'n'    │
+│ '2'  │ 'Eat lunch'     │   'n'  │
 └─────────────────────────────────┘
 ```
 

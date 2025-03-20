@@ -1,5 +1,5 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { Change, Client, CrrColumn } from "./change.ts";
+import { Change, Client, compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols } from "./change.ts";
 import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
 
@@ -52,6 +52,12 @@ export class SqliteDBWrapper {
         await this.exec(`INSERT OR REPLACE INTO "crr_hlc" (time) VALUES (?)`, [now]);
 
         await execTrackChangesHelper(this, sql, params);
+
+        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at >= ? AND site_id = ?`, [now, this.siteId]);
+        
+        await saveFractionalIndexCols(this, appliedChanges);
+        await saveChanges(this, appliedChanges);
+        await compactChanges(this, appliedChanges);
     }
 
     async first<T>(sql: string, params: any[]): Promise<T | undefined> {

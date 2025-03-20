@@ -72,7 +72,7 @@ export class SqliteDB {
     async onChange(change: SqliteUpdateHookChange) {
         if (this.crrColumns[change.tableName]) {
             if (this.capturingChanges) {
-                const changes = await this.generateChangesFromUpdate(change, this.deleteRowidToPk);
+                const changes = await this.generateChanges(change, this.deleteRowidToPk);
                 
                 await saveFractionalIndexCols(this, changes);
                 await saveChanges(this, changes);
@@ -196,7 +196,7 @@ export class SqliteDB {
         return fk
     }
 
-    private async generateChangesFromUpdate(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
+    private async generateChanges(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);

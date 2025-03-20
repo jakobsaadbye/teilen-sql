@@ -34,7 +34,7 @@ export const insertCrrTablesStmt = `
 
     CREATE TABLE IF NOT EXISTS crr_hlc(
         lotr int primary key default 1,
-        time bigint
+        time bigint default 0
     );
 
     COMMIT;
