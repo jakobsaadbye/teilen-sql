@@ -32,5 +32,10 @@ export const insertCrrTablesStmt = `
         is_me integer not null
     );
 
+    CREATE TABLE IF NOT EXISTS crr_hlc(
+        lotr int primary key default 1,
+        time bigint
+    );
+
     COMMIT;
 ` 

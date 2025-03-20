@@ -1,6 +1,7 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { CrrColumn } from "./change.ts";
-import { SqliteForeignKey } from "./sqlitedb.ts";
+import { Change, Client, CrrColumn } from "./change.ts";
+import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper } from "./sqlitedb.ts";
+import { insertCrrTablesStmt, } from "./tables.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
@@ -13,11 +14,15 @@ import { SqliteForeignKey } from "./sqlitedb.ts";
  */
 export class SqliteDBWrapper {
     #db: Database
+    siteId = "";
     pks: { [tblName: string]: string[] } = {};
     crrColumns: { [tbl_name: string]: CrrColumn[] } = {};
 
     constructor(db: Database) {
         this.#db = db;
+        this.siteId = "";
+        this.pks = {};
+        this.crrColumns = {};
 
         this.exec(`PRAGMA foreign_keys = OFF`, []);
     }
@@ -27,6 +32,7 @@ export class SqliteDBWrapper {
             // console.log(sql, params);
             this.#db.exec(sql, ...params);
         } catch (e) {
+            console.error(e);
             return e;
         }
     }
@@ -34,6 +40,18 @@ export class SqliteDBWrapper {
     async execOrThrow(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         const err = await this.exec(sql, params, options);
         if (err) throw err;
+    }
+
+    async execTrackChanges(sql: string, params: any[]) {
+        // TODO: This will become a place where we would actually create a new hybrid logical clock.
+        // Note:
+        //       It is only here in the wrapper for the server as we don't have access to the updateHook, so change
+        //       generation is purely done in triggers which greatly limits what we can do. Thus we insert things into tables before
+        //       the triggers run so they can query computed values
+        const now = (new Date).getTime();
+        await this.exec(`INSERT OR REPLACE INTO "crr_hlc" (time) VALUES (?)`, [now]);
+
+        await execTrackChangesHelper(this, sql, params);
     }
 
     async first<T>(sql: string, params: any[]): Promise<T | undefined> {
@@ -56,7 +74,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -89,11 +107,20 @@ export class SqliteDBWrapper {
         if (err) return console.error(err);
     }
 
-    private async finalize() {
+    async finalize() {
         const crrColumns = await this.select<CrrColumn[]>(`SELECT * FROM "crr_columns"`, []);
         this.crrColumns = Object.groupBy(crrColumns, ({ tbl_name }) => tbl_name) as { [tbl_name: string]: CrrColumn[] };
 
         await this.extractPks();
+    }
+
+    async getMyChanges() {
+        const client = await this.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.siteId]);
+        if (!client) return;
+
+        const lastPushedAt = client.last_pushed_at;
+        const changes = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.siteId]);
+        return changes;
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
@@ -111,4 +138,14 @@ export class SqliteDBWrapper {
         }
         this.pks = pks;
     }
+}
+
+export const createServerDb = async (db: Database) => {
+    const wDb = new SqliteDBWrapper(db) as SqliteDB;
+
+    await wDb.exec(insertCrrTablesStmt, []);
+
+    await assignSiteId(wDb);
+
+    return wDb;
 }

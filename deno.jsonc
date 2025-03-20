@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "exports": "./index.ts",
   "tasks" : {
-        "test" : "deno run fracTest.ts"
+        "test" : "deno test --no-check --allow-all ./tests/main.ts"
   },
   "license": "MIT",
   "nodeModulesDir": "auto",

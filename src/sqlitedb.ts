@@ -1,5 +1,5 @@
 import { ms } from "./ms.ts"
-import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change } from "./change.ts";
+import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client } from "./change.ts";
 import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
@@ -38,15 +38,15 @@ export class SqliteDB {
     ready: boolean
 
     #debug = false;
-    #mp: MessagePort
-    #capturingChanges: boolean
-    #deleteRowidToPk: {[rowid: string] : string}
+    mp: MessagePort
+    capturingChanges: boolean
+    deleteRowidToPk: {[rowid: string] : string}
 
     constructor(name:string, mp: MessagePort) {
         this.name = name;
-        this.#mp = mp;
-        this.#capturingChanges = false;
-        this.#deleteRowidToPk = {};
+        this.mp = mp;
+        this.capturingChanges = false;
+        this.deleteRowidToPk = {};
         this.ready = false;
 
         // Broadcast channel to notify dependent queries to re-run
@@ -57,7 +57,7 @@ export class SqliteDB {
 
         // Broadcast any events handled by the worker to any of the functions below waiting for a result
         const bc = new BroadcastChannel("message_bus");
-        this.#mp.addEventListener('message', (event) => {
+        this.mp.addEventListener('message', (event) => {
             if (event.data.type === 'change') {
                 bcUpdateHook.postMessage(event.data.change);
                 this.onChange(event.data.change);
@@ -71,8 +71,8 @@ export class SqliteDB {
 
     async onChange(change: SqliteUpdateHookChange) {
         if (this.crrColumns[change.tableName]) {
-            if (this.#capturingChanges) {
-                const changes = await this.generateChangesFromUpdate(change, this.#deleteRowidToPk);
+            if (this.capturingChanges) {
+                const changes = await this.generateChangesFromUpdate(change, this.deleteRowidToPk);
                 
                 await saveFractionalIndexCols(this, changes);
                 await saveChanges(this, changes);
@@ -108,60 +108,15 @@ export class SqliteDB {
     }
 
     async execTrackChanges(sql: string, params: any[]) {
-        try {
-            const tblName = sqlExplainExec(sql);
-            const operation = sqlDetermineOperation(sql);
+        const tblName = sqlExplainExec(sql);
 
-            if (this.crrColumns[tblName] === undefined) {
-                console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it`);
-                return;
-            }
-
-            const deleteRowidToPk: {[rowid: string] : string} = {};
-            if (operation === 'delete') {
-                // Turn the delete stmt into a select stmt to get which rows are being affected.
-                const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
-                const rows = await this.select<{rowid: bigint}[]>(deleteAsSelectQuery, params);
-                for (const row of rows) {
-                    const pk = pkEncodingOfRow(this, tblName, row);
-                    deleteRowidToPk['' + row.rowid] = pk;
-                }
-                this.#deleteRowidToPk = deleteRowidToPk;
-            }
-
-            this.#capturingChanges = true;
-            await this.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
-            await this.exec(sql, params, { notify: false });
-            await this.exec(`COMMIT;`, [], { notify: false });
-            this.#capturingChanges = false;
-
-            // const updateHook = new BroadcastChannel("update_hook");
-            // const change: SqliteUpdateHookChange = await new Promise((resolve, reject) => {
-            //     updateHook.addEventListener('message', (event) => {
-            //         resolve(event.data);
-            //     });
-            //     this.exec(sql, params, { notify: false }).catch(err => reject(err));
-            // });
-
-            // const changeSet = await this.generateChangesFromUpdate(change, deleteRowidToPk);
-            // await saveFractionalIndexCols(this, changeSet);
-            // await saveChanges(this, changeSet);
-            // await compactChanges(this, changeSet);
-
-            
-
-            // @Incomplete - A delete might cascade over multiple tables, so only notifying hooks of the deleted row is not sufficient.
-            // We should get all the table names that are affected by the delete
-            this.channelTableChange.postMessage(tblName);
-            this.channelTableChange.postMessage("crr_changes");
-        } catch (e) {
-            console.error(e);
-            return e;
-        }
+        await execTrackChangesHelper(this, sql, params);
+        this.channelTableChange.postMessage(tblName);
+        this.channelTableChange.postMessage("crr_changes");
     }
 
     async first<T>(sql: string, params: any[]) {
-        const { data: results, error } = await this.selectWithError<T>(sql, params);
+        const { data: results, error } = await this.selectWithError<T[]>(sql, params);
         if (error) throw new Error(error);
         if (results.length === 0) {
             return undefined;
@@ -183,7 +138,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -224,6 +179,15 @@ export class SqliteDB {
         await this.extractPks();
 
         this.ready = true;
+    }
+
+    async getMyChanges() {
+        const client = await this.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.siteId]);
+        if (!client) return [];
+
+        const lastPushedAt = client.last_pushed_at;
+        const changes = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.siteId]);
+        return changes;
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
@@ -316,7 +280,7 @@ export class SqliteDB {
     private async send(type: MessageType, payload?: any): Promise<any> {
         const id = crypto.randomUUID();
         const bc = new BroadcastChannel('message_bus');
-        this.#mp.postMessage({ type: type, id, ...payload });
+        this.mp.postMessage({ type: type, id, ...payload });
         const data = await new Promise(resolve => {
             bc.addEventListener('message', (event) => {
                 if (event.data.id === id) {
@@ -331,7 +295,7 @@ export class SqliteDB {
 }
 
 /**
- * Creates a new local database
+ * Creates a new local browser database
  * @param name Name of the database file to store in OPFS
  */
 export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
@@ -370,6 +334,12 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
     }
 
     // Get or assign a unique site_id
+    await assignSiteId(db);
+
+    return db;
+}
+
+export const assignSiteId = async (db: SqliteDB) => {
     const me = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE is_me = true`, [])
     if (!me) {
         const id = crypto.randomUUID();
@@ -378,14 +348,42 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
             throw new Error(`Failed to assign this browser a site_id. Maybe try refreshing the browser`)
         }
 
-        console.log("Assigned a new site_id");
+        // console.log("Assigned a new site_id");
         db.siteId = id;
     } else {
         db.siteId = me.site_id;
     }
-
-    return db;
 }
 
+export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: any[]) => {
+    try {
+        const tblName = sqlExplainExec(sql);
+        const operation = sqlDetermineOperation(sql);
 
+        if (db.crrColumns[tblName] === undefined) {
+            console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it`);
+            return;
+        }
 
+        const deleteRowidToPk: {[rowid: string] : string} = {};
+        if (operation === 'delete') {
+            // Turn the delete stmt into a select stmt to get which rows are being affected.
+            const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
+            const rows = await db.select<{rowid: bigint}[]>(deleteAsSelectQuery, params);
+            for (const row of rows) {
+                const pk = pkEncodingOfRow(db, tblName, row);
+                deleteRowidToPk['' + row.rowid] = pk;
+            }
+            db.deleteRowidToPk = deleteRowidToPk;
+        }
+
+        db.capturingChanges = true;
+        await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
+        await db.exec(sql, params, { notify: false });
+        await db.exec(`COMMIT;`, [], { notify: false });
+        db.capturingChanges = false;
+    } catch (e) {
+        console.error(e);
+        return e;
+    }
+}

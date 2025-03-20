@@ -1,5 +1,5 @@
-import { assert } from "./utils.ts";
-import { BASE_10_DIGITS, BASE_52_DIGITS, fracMid } from "./frac.ts";
+import { assert } from "../src/utils.ts";
+import { BASE_10_DIGITS, BASE_52_DIGITS, fracMid } from "../src/frac.ts";
 
 const main = () => {
     fracMidBase10();

@@ -6,4 +6,4 @@ export * from "./src/syncer.ts"
 export { insertCrrTablesStmt } from "./src/tables.ts"
 
 // Server stuff
-export { SqliteDBWrapper } from "./src/sqlitedbWrapper.ts"
+export { SqliteDBWrapper, createServerDb } from "./src/sqlitedbWrapper.ts"
