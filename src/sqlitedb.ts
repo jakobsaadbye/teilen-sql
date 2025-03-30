@@ -1,8 +1,8 @@
-import { ms } from "./ms.ts"
-import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client } from "./change.ts";
-import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt } from "./utils.ts"
+import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
+import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt, generateUniqueId } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
+import { checkout, commit, discardChanges, preparePull, preparePush, PullData, PushData, receivePull, receivePush } from "./versioning.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -40,9 +40,9 @@ export class SqliteDB {
     #debug = false;
     mp: MessagePort
     capturingChanges: boolean
-    deleteRowidToPk: {[rowid: string] : string}
+    deleteRowidToPk: { [rowid: string]: string }
 
-    constructor(name:string, mp: MessagePort) {
+    constructor(name: string, mp: MessagePort) {
         this.name = name;
         this.mp = mp;
         this.capturingChanges = false;
@@ -70,15 +70,15 @@ export class SqliteDB {
     }
 
     async onChange(change: SqliteUpdateHookChange) {
-        if (this.crrColumns[change.tableName]) {
-            if (this.capturingChanges) {
-                const changes = await this.generateChanges(change, this.deleteRowidToPk);
-                
-                await saveFractionalIndexCols(this, changes);
-                await saveChanges(this, changes);
-                await compactChanges(this, changes);
-            }
-        }
+        // if (this.crrColumns[change.tableName]) {
+        //     if (this.capturingChanges) {
+        //         const changes = await this.generateChanges(change, this.deleteRowidToPk);
+
+        //         await saveFractionalIndexCols(this, changes);
+        //         await saveChanges(this, changes);
+        //         await compactChanges(this, changes);
+        //     }
+        // }
     }
 
     async close(): Promise<Error> {
@@ -108,9 +108,20 @@ export class SqliteDB {
     }
 
     async execTrackChanges(sql: string, params: any[]) {
-        const tblName = sqlExplainExec(sql);
+
+        const now = (new Date).getTime();
+        await this.exec(`INSERT OR REPLACE INTO "crr_hlc" (time) VALUES (?)`, [now]);
 
         await execTrackChangesHelper(this, sql, params);
+
+        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at >= ? AND site_id = ?`, [now, this.siteId]);
+
+        // await saveFractionalIndexCols(this, appliedChanges);
+        // await saveChanges(this, appliedChanges);
+        // await compactChanges(this, appliedChanges);
+
+        const tblName = sqlExplainExec(sql);
+
         this.channelTableChange.postMessage(tblName);
         this.channelTableChange.postMessage("crr_changes");
     }
@@ -138,7 +149,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc", "crr_commits"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -178,6 +189,9 @@ export class SqliteDB {
         // Extract the primary keys of tables to be used in changes
         await this.extractPks();
 
+        await detachChangeGenerationTriggers(this);
+        await attachChangeGenerationTriggers(this);
+
         this.ready = true;
     }
 
@@ -190,13 +204,43 @@ export class SqliteDB {
         return changes;
     }
 
+    async preparePush() {
+        return await preparePush(this);
+    }
+
+    async preparePull() {
+        return await preparePull(this);
+    }
+
+    /** Should only be called by a server database */
+    async receivePush(push: PushData) {
+        return await receivePush(this, push);
+    }
+
+    /** Should only be called by a server database */
+    async receivePull(pull: PullData) {
+        return await receivePull(this, pull);
+    }
+
+    async commit(message: string) {
+        return await commit(this, message);
+    }
+
+    async checkout(commitId: string) {
+        await checkout(this, commitId);
+    }
+
+    async discardChanges() {
+        await discardChanges(this);
+    }
+
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);
         if (fk === undefined) return null;
         return fk
     }
 
-    private async generateChanges(change: SqliteUpdateHookChange, deleteRowidToPk: {[rowid: string] : string}): Promise<Change[]> {
+    private async generateChanges(change: SqliteUpdateHookChange, deleteRowidToPk: { [rowid: string]: string }): Promise<Change[]> {
         switch (change.updateType) {
             case "insert": {
                 const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -207,23 +251,25 @@ export class SqliteDB {
 
                 const pk = pkEncodingOfRow(this, change.tableName, row);
                 const now = (new Date()).getTime();
+                const version = "0";
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     if (key === "rowid") continue;
-                    changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
+                    changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0, version });
                 }
                 return changeSet;
             }
             case "delete": {
                 const tblName = change.tableName;
                 const now = (new Date()).getTime();
-                
+                const version = "0";
+
                 // We use the computed deleteRowidToPk mapping to lookup the primary-key that got deleted
                 const pk = deleteRowidToPk['' + change.rowid];
                 assert(pk);
-                
-                return [{ type: 'delete', tbl_name: tblName, col_id: "tombstone", pk, value: 1, site_id: this.siteId, created_at: now, applied_at: 0 }];
+
+                return [{ type: 'delete', tbl_name: tblName, col_id: "tombstone", pk, value: 1, site_id: this.siteId, created_at: now, applied_at: 0, version: version }];
             };
             case "update": {
                 const row = await this.first<any>(`SELECT * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
@@ -240,12 +286,13 @@ export class SqliteDB {
                 }
 
                 const now = (new Date()).getTime();
+                const version = "0";
 
                 const changeSet = [];
                 for (const [key, value] of Object.entries(row)) {
                     const lastValue = lastVersionOfRow[key];
                     if (value !== lastValue) {
-                        changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0 });
+                        changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0, version });
 
                         // :ModifyForeignKeyInserts
                         // @Temporary - If the update changes the foreign-key, also update the original insert change
@@ -342,13 +389,12 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
 export const assignSiteId = async (db: SqliteDB) => {
     const me = await db.first<Client>(`SELECT * FROM "crr_clients" WHERE is_me = true`, [])
     if (!me) {
-        const id = crypto.randomUUID();
+        const id = generateUniqueId();
         const err = await db.exec(`INSERT INTO "crr_clients" (site_id, is_me) VALUES (?, true)`, [id])
         if (err) {
             throw new Error(`Failed to assign this browser a site_id. Maybe try refreshing the browser`)
         }
 
-        // console.log("Assigned a new site_id");
         db.siteId = id;
     } else {
         db.siteId = me.site_id;
@@ -365,17 +411,17 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
             return;
         }
 
-        const deleteRowidToPk: {[rowid: string] : string} = {};
-        if (operation === 'delete') {
-            // Turn the delete stmt into a select stmt to get which rows are being affected.
-            const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
-            const rows = await db.select<{rowid: bigint}[]>(deleteAsSelectQuery, params);
-            for (const row of rows) {
-                const pk = pkEncodingOfRow(db, tblName, row);
-                deleteRowidToPk['' + row.rowid] = pk;
-            }
-            db.deleteRowidToPk = deleteRowidToPk;
-        }
+        // const deleteRowidToPk: { [rowid: string]: string } = {};
+        // if (operation === 'delete') {
+        //     // Turn the delete stmt into a select stmt to get which rows are being affected.
+        //     const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
+        //     const rows = await db.select<{ rowid: bigint }[]>(deleteAsSelectQuery, params);
+        //     for (const row of rows) {
+        //         const pk = pkEncodingOfRow(db, tblName, row);
+        //         deleteRowidToPk['' + row.rowid] = pk;
+        //     }
+        //     db.deleteRowidToPk = deleteRowidToPk;
+        // }
 
         db.capturingChanges = true;
         await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });

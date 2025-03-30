@@ -42,6 +42,25 @@ export const sqlPlaceholders = (a: any[]) => {
     return `${a.map(_ => `?`).join(',')}`;
 }
 
+/** Generates a set of placeholders each the length of the amount of keys in objects of a.
+   
+    Useful when populating values inside a sql statement
+
+   @Example ```
+      const a = [
+        { id: '1', 'title' : 'hello' }, 
+        { id: '2', 'title' : 'world' }
+      ]
+      
+      Calling sqlPlaceholdersMulti(a) -> (?, ?) (?, ?)
+    ```
+*/
+export const sqlPlaceholdersMulti = (a: any[]) => {
+    if (a.length === 0) return "()";
+    const nKeys = Object.keys(a[0]);
+    return `${a.map(_ => '(' + sqlPlaceholders(nKeys) + ') ')}`;
+}
+
 export const sqlDetermineOperation = (sql: string) : SqlOperation => {
     const s = sql.trim().split(' ');
     switch (s[0].toLowerCase()) {
@@ -128,4 +147,39 @@ export const assert = (expr: unknown, msg?: string): asserts expr => {
 
 export const unique = (arr: any[]) => {
     return [...new Set(arr)];
+}
+
+export const generateUniqueId = () => {
+    return crypto.randomUUID().split("-")[0];
+}
+
+const insertRowsHelper = async (db: SqliteDB, tblName: string, rows: any[]) => {
+    const pkCols = db.pks[tblName];
+    const cols = Object.keys(rows[0]);
+
+    const valueSets = rows.map(row => Object.values(row));
+    const allVals = valueSets.reduce((allVals, vals) => [...allVals, ...vals], []);
+
+    const updateStr = cols.filter(col => !pkCols.includes(col)).map(col => `${col} = EXCLUDED.${col}`).join(",\n")
+    
+    await db.execOrThrow(`
+        INSERT INTO "${tblName}" (${cols.join(', ')})
+        VALUES ${valueSets.map(vals => `(${sqlPlaceholders(vals)})`).join(",")}
+        ON CONFLICT DO UPDATE SET
+            ${updateStr}
+    `, allVals);
+}
+
+export const insertRows = async (db: SqliteDB, tblName: string, rows: any[]) => {
+    if (rows.length === 0) return;
+
+    const rounds = Math.ceil(rows.length / 1_000);
+    for (let i = 0; i < rounds; i++) {
+        const start = i * 1_000;
+        let end = start + 1_000;
+        if (end >= rows.length) end = rows.length;
+
+        const batch = rows.slice(start, end);
+        await insertRowsHelper(db, tblName, batch);
+    }
 }

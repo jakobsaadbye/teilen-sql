@@ -2,6 +2,7 @@ import { Database } from "jsr:@db/sqlite@0.12";
 import { Change, Client, compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols } from "./change.ts";
 import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
+import { checkout, commit, discardChanges, preparePull, preparePush, PullData, PushData, receivePull, receivePush } from "./versioning.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
@@ -39,7 +40,10 @@ export class SqliteDBWrapper {
 
     async execOrThrow(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {
         const err = await this.exec(sql, params, options);
-        if (err) throw err;
+        if (err) {
+            console.error(err);
+            throw err
+        };
     }
 
     async execTrackChanges(sql: string, params: any[]) {
@@ -53,8 +57,8 @@ export class SqliteDBWrapper {
 
         await execTrackChangesHelper(this, sql, params);
 
-        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at >= ? AND site_id = ?`, [now, this.siteId]);
-        
+        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at = ? AND site_id = ?`, [now, this.siteId]);
+
         await saveFractionalIndexCols(this, appliedChanges);
         await saveChanges(this, appliedChanges);
         await compactChanges(this, appliedChanges);
@@ -80,7 +84,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc", "crr_commits"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -127,6 +131,36 @@ export class SqliteDBWrapper {
         const lastPushedAt = client.last_pushed_at;
         const changes = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.siteId]);
         return changes;
+    }
+
+    async preparePush() {
+        return await preparePush(this);
+    }
+
+    async preparePull() {
+        return await preparePull(this);
+    }
+
+    /** Should only be called by a server database */
+    async receivePush(push: PushData) {
+        return await receivePush(this, push);
+    }
+
+    /** Should only be called by a server database */
+    async receivePull(pull: PullData) {
+        return await receivePull(this, pull);
+    }
+
+    async commit(message: string) {
+        return await commit(this, message);
+    }
+
+    async checkout(commitId: string) {
+        await checkout(this, commitId);
+    }
+
+    async discardChanges() {
+        await discardChanges(this);
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
