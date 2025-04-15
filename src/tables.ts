@@ -11,11 +11,12 @@ export const insertCrrTablesStmt = `
         created_at bigint not null,
         applied_at bigint not null,
         version text references crr_commits(id),
+        document text references crr_documents(id),
 
         primary key(type, tbl_name, col_id, pk, version)
     );
 
-    CREATE index IF NOT EXISTS crr_changes_index ON crr_changes(tbl_name, created_at, version);
+    CREATE index IF NOT EXISTS crr_changes_index ON crr_changes(tbl_name, created_at, version, document);
 
     CREATE TABLE IF NOT EXISTS crr_columns(
         tbl_name text not null,
@@ -31,27 +32,33 @@ export const insertCrrTablesStmt = `
         site_id primary key,
         last_pulled_at bigint not null default 0,
         last_pushed_at bigint not null default 0,
-        last_pulled_commit references crr_commits(id),
-        last_pushed_commit references crr_commits(id),
-        head references crr_commits(id),
-        is_me boolean not null,
-        time_travelling boolean default 0
+        is_me boolean not null
     );
 
-    CREATE TABLE IF NOT EXISTS crr_hlc(
+    CREATE TABLE IF NOT EXISTS crr_temp(
         lotr int primary key default 1,
-        time bigint default 0
+        time bigint default 0,
+        time_travelling boolean default 0,
+        document text references crr_documents(id)
     );
 
     CREATE TABLE IF NOT EXISTS crr_commits(
         id text primary key,
+        document text references crr_documents(id),
         parent text,
         message text,
         author references crr_clients(site_id),
         created_at bigint
     );
 
-    CREATE index IF NOT EXISTS crr_commits_index ON crr_commits(created_at);
+    CREATE index IF NOT EXISTS crr_commits_index ON crr_commits(created_at, document);
+
+    CREATE TABLE IF NOT EXISTS crr_documents(
+        id text primary key,
+        head text references crr_commits(id),
+        last_pulled_commit text references crr_commits(id),
+        last_pushed_commit text references crr_commits(id)
+    );
 
     COMMIT;
 ` 

@@ -43,11 +43,11 @@ type QueryFunc<T> = (db: SqliteDB, ...params: any) => Promise<T>;
 type UseQueryOptions = {
     fireIf?: boolean        // A condition to be true before executing
     once?: boolean          // If the query only should run once when the component mounts. Otherwise, it will re-run on every update of the queried table
-    first?: boolean         // Get the first matching result, undefined if no result
-    dependencies?: string[] // List of table names that if updated re-runs the query. Only needed to be specified if passed a function that can run arbitrary sql stmts. Otherwise the affected table is infered from the sql query
+    first?: boolean         // Get the first matching result, undefined otherwise
+    tableDependencies?: string[]    // List of table names that if updated re-runs the query. Only needed to be specified if passed a function that can run arbitrary sql stmts. Otherwise the affected table is infered from the sql query
 }
 
-export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?: UseQueryOptions) : {data: T | undefined, error: any, isLoading: boolean} => {
+export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?: UseQueryOptions): { data: T | undefined, error: any, isLoading: boolean } => {
     const db = useContext(SqliteContext);
     if (db === null) {
         throw new Error(`Failed to retreive db from context. Make sure the components useQuery is used in, is inside of a SqliteContext.Provider`)
@@ -61,16 +61,16 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
     const rerender = () => setCounter(counter + 1);
 
     useEffect(() => {
-        let dependencies: string[] | undefined = undefined;
-        if (typeof(sql) === 'function') dependencies = options?.dependencies ?? [];
+        let tableDeps: string[] | undefined = undefined;
+        if (typeof (sql) === 'function') tableDeps = options?.tableDependencies ?? [];
         else {
-            if (options && options.dependencies) dependencies = options.dependencies;
+            if (options && options.tableDependencies) tableDeps = options.tableDependencies;
             else {
                 sqlExplainQuery(db, sql)
-                    .then(deps => dependencies = deps)
-                    .catch(() => dependencies = []);
+                    .then(deps => tableDeps = deps)
+                    .catch(() => tableDeps = []);
             }
-        } 
+        }
 
         if (options?.fireIf === false) return;
 
@@ -119,8 +119,8 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
             bc.addEventListener('message', (e) => {
                 const changedTable: string = e.data;
                 if (changedTable === "") return fire();
-                if (dependencies.length > 0) {
-                    if (dependencies.includes(changedTable)) {
+                if (tableDeps && tableDeps.length > 0) {
+                    if (tableDeps.includes(changedTable)) {
                         fire();
                     }
                 } else {
@@ -133,7 +133,7 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
             isMounted = false;
             bc.close();
         }
-    }, [sql, options?.fireIf]);
+    }, [sql, options?.fireIf, ...params ?? []]);
 
     return { data, error, isLoading };
 }

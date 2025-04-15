@@ -1,6 +1,7 @@
 import { applyChanges, Change, Client } from "./change.ts";
 import { SqliteDB } from "./sqlitedb.ts";
 import { unique } from "./utils.ts";
+import { applyPull, Commit, Document, PullResponse, PushResponse } from "./versioning.ts";
 
 type SyncEventType = "change";
 
@@ -17,6 +18,10 @@ type Listener = {
 type Options = {
     pullEndpoint: string
     pushEndpoint: string
+
+    /** Commit endpoints only need to be defined if mode is git-style */
+    commitPushEndpoint?: string 
+    commitPullEndpoint?: string
 }
 
 export class Syncer {
@@ -72,7 +77,7 @@ export class Syncer {
 
         if (changes.length === 0) return;
 
-        let data = JSON.stringify({
+        const data = JSON.stringify({
             changes
         });
 
@@ -103,21 +108,126 @@ export class Syncer {
 
         const lastPushedAt = client.last_pushed_at;
         const changes = await this.db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.db.siteId]);
+        const commits = await this.db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE created_at > ? AND author = ? ORDER BY created_at ASC`, [lastPushedAt, this.db.siteId]);
 
         console.log(`Pushing ${changes.length} changes`);
         if (changes.length === 0) return;
 
         const msg = JSON.stringify({
             type: "push-changes",
-            data: changes,
+            data: {
+                commits,
+                changes
+            },
         });
 
         ws.send(msg);
         return;
     }
 
+    async pushCommits(db: SqliteDB, documentId = 'main') {
+        if (!this.options.commitPushEndpoint) {
+            console.warn(`No commit push-endpoint was specified in the syncer options. Set 'commitPushEndpoint' as an option to push version controlled changes`);
+            return;
+        }
+
+        const pushRequest = await db.preparePushCommits(documentId);
+        if (pushRequest.commits.length === 0) return;
+
+        const data = JSON.stringify(pushRequest);
+
+        try {
+            const response = await fetch(this.options.commitPushEndpoint, {
+                method: 'PUT',
+                headers: new Headers({
+                    "Content-Type": "application/json"
+                }),
+                body: data
+            });
+
+            if (!response.ok) {
+                if (response.status === 404) {
+                    return;
+                } else {
+                    const err = await response.json();
+                    console.error("Failed to push commits. Error from server: ", err);
+                    return;
+                }
+            }
+
+            const push = await response.json() as PushResponse;
+            switch (push.status) {
+            case "ok": {
+                console.log(`Push completed successfully ...`);
+                console.log(push);
+                await db.exec(`UPDATE "crr_documents" SET last_pushed_commit = head, last_pulled_commit = head WHERE id = ?`, [push.documentId]);
+                return;
+            }
+            case "needs-pull": {
+                console.log(push.message);
+                return push;
+            }
+            case "request-contained-no-commits": {
+                console.error(`Message from server:`, push.message);
+                return push;
+            }
+            case "request-malformed":
+                console.error(`Message from server:`, push.message);
+                return push;
+            }
+        } catch (error) {
+            console.error("Failed to push commits", error);
+            return;
+        }
+    }
+
+    async pullCommits(db: SqliteDB, documentId = "main") {
+        if (!this.options.commitPullEndpoint) {
+            console.warn(`No commit pull-endpoint was specified in the syncer options. Set 'commitPullEndpoint' as an option to pull version controlled changes`);
+            return;
+        }
+
+        const url = new URL(this.options.commitPullEndpoint);
+        
+        const requestData = await db.preparePullCommits();
+        const data = JSON.stringify(requestData);
+        
+        try {
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: new Headers({
+                    "Content-Type": "application/json"
+                }),
+                body: data
+            });
+
+            if (!response.ok) {
+                if (response.status === 404) {
+                    return;
+                } else {
+                    const err = await response.json();
+                    console.error("Failed to pull commits. Error from server: ", err);
+                    return;
+                }
+            }
+
+            const pull = await response.json() as PullResponse;
+            switch (pull.status) {
+            case "ok": {
+                return await applyPull(db, pull.packets);
+            }
+            }
+        } catch (error) {
+            console.error("Failed to pull commits", error);
+            return;
+        }
+    }
+
     removeEventListener(listener: Listener) {
         this.listeners = [];
+        // @Fix - the listener should be removed properly like is done below.
+        //        i think we ran into an issue of binding this before this function
+        //        got called, so it wasn't being removed???
         // const index = this.listeners.findIndex(x => x.type === listener.type);
         // delete this.listeners[index];
     }

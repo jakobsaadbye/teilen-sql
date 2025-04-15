@@ -1,8 +1,8 @@
-import { assert, pkEncodingOfRow, sqlPlaceholders, unique, insertRows, sqlPlaceholdersMulti } from "./utils.ts";
+import { assert, pkEncodingOfRow, sqlPlaceholders, unique, insertRows, sqlPlaceholdersMulti, pkEqual, pkNotEqual } from "./utils.ts";
 import { fracMid } from "./frac.ts";
 import { SqliteDB } from "./sqlitedb.ts"
 
-// TODO: 
+// @TODO: 
 //  - Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
 //  - Record all the tables that got changed in applyChanges and only then notify table changes
 
@@ -11,10 +11,6 @@ export type Client = {
     site_id: string
     last_pulled_at: bigint
     last_pushed_at: bigint
-    last_pushed_commit: string | null
-    last_pulled_commit: string | null
-    head: string | null
-    time_travelling: boolean
     is_me: boolean
 };
 
@@ -39,6 +35,7 @@ export type Change = {
     created_at: number
     applied_at: number
     version: string
+    document: string
 };
 
 export type FkRelation = {
@@ -51,7 +48,7 @@ export type FkRelation = {
 
 export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, []);
-    await db.exec(`UPDATE "crr_clients" SET time_travelling = 1 WHERE is_me = 1`, []);
+    await db.exec(`UPDATE "crr_temp" SET time_travelling = 1`, []);
 
     const changeSets = getChangeSets(changes);
 
@@ -236,7 +233,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     // @Investigate: Is this necessary???
     // await updateLastPulledAtFromPeers(db, changes);
 
-    await db.exec(`UPDATE "crr_clients" SET time_travelling = 0 WHERE is_me = 1`, []);
+    await db.exec(`UPDATE "crr_temp" SET time_travelling = 0`, []);
 
     await db.exec(`COMMIT;`, []);
 
@@ -796,14 +793,14 @@ export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
     const appliedAt = new Date().getTime();
 
     const values = changes.reduce((vals, c) => {
-        vals.push(c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt, c.version);
+        vals.push(c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt, c.version, c.document);
         return vals;
     }, [] as any[])
     // changes.map(c => [c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt, c.version]);
     // const values = valueSets.reduce((acc, vals) => [...acc, ...vals], []);
 
     const sql = `
-        INSERT INTO "crr_changes" (type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version)
+        INSERT INTO "crr_changes" (type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
         VALUES ${sqlPlaceholdersMulti(changes)}
         ON CONFLICT DO UPDATE SET
             value      = EXCLUDED.value,
@@ -845,6 +842,8 @@ const getRelatedChangesFromChanges = (db: SqliteDB, changes: Change[], rootTblNa
     return related;
 }
 
+// TODO: This function should be updated, as it is now called in batches of changes rather than individual
+//       changesets which it assumes.
 export const compactChanges = async (db: SqliteDB, changeSet: Change[]) => {
     if (changeSet.length === 0) return [];
 
@@ -872,23 +871,6 @@ export const compactChanges = async (db: SqliteDB, changeSet: Change[]) => {
                 }
                 return;
             }
-
-            // @Improvement - The following outcommented code was an attempt to reduce the amount of updates send by removing updates
-            // that were never synced. Although it lead to several problems and so is scraped in favor of @Correctness.
-            //
-            //
-            // No insert. We mark all related unsynced changes as 'old' by setting the 'created_at' field to a negative number,
-            // so that they are overridden by others changes. We don't delete them, as we might have to recreate the rows
-            // at a later point if any new inserts are made.
-            // const relatedChanges = getRelatedChangesFromChanges(db, unsyncedChanges, tblName, pk);
-            // for (const [tblName, pks] of Object.entries(relatedChanges)) {
-            //     const err = await db.exec(`
-            //         UPDATE "crr_changes" 
-            //         SET created_at = -1
-            //         WHERE type != 'delete' AND tbl_name = ? AND site_id = ? AND applied_at > ? AND pk IN (${sqlPlaceholders(pks)})
-            //     `, [tblName, db.siteId, client.last_pushed_at, ...pks]);
-            //     if (err) console.error(err);
-            // }
         }
     }
 }
@@ -908,6 +890,9 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
 
         const getPk = (type: "insert" | "update" | "delete") => {
             const pkCols = db.pks[tblName];
+            if (pkCols.length === 0) {
+                return "NEW.rowid";
+            }
             const prefix = type === "delete" ? "OLD" : "NEW";
             let pk = `${prefix}.${pkCols[0]}`;
             if (pkCols.length > 1) {
@@ -919,25 +904,27 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
 
         const columnInsert = (col: CrrColumn) => {
             return `
-                INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version)
+                INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                     SELECT 'insert', '${tblName}', '${col.col_id}', ${getPk("insert")}, NEW.${col.col_id}, '${db.siteId}',
-                            (SELECT time FROM crr_hlc LIMIT 1), 
-                            (SELECT time FROM crr_hlc LIMIT 1),
-                            '0'
-                    WHERE EXISTS (SELECT 1 FROM crr_clients WHERE is_me = 1 AND time_travelling = 0 LIMIT 1)
+                            (SELECT time FROM crr_temp LIMIT 1), 
+                            (SELECT time FROM crr_temp LIMIT 1),
+                            '0',
+                            (SELECT document FROM crr_temp LIMIT 1)
+                    WHERE EXISTS (SELECT 1 FROM crr_temp WHERE time_travelling = 0 LIMIT 1)
                 ;
             `;
         }
 
         const columnUpdate = (col: CrrColumn) => {
             return `
-                INSERT INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version)
+                INSERT INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                     SELECT 'update', '${tblName}', '${col.col_id}', ${getPk("update")}, NEW.${col.col_id}, '${db.siteId}',
-                        (SELECT time FROM crr_hlc LIMIT 1), 
-                        (SELECT time FROM crr_hlc LIMIT 1),
-                        '0'
+                        (SELECT time FROM crr_temp LIMIT 1), 
+                        (SELECT time FROM crr_temp LIMIT 1),
+                        '0',
+                        (SELECT document FROM crr_temp LIMIT 1)
                     WHERE OLD.${col.col_id} != NEW.${col.col_id} AND
-                    EXISTS (SELECT 1 FROM crr_clients WHERE is_me = 1 AND time_travelling = 0 LIMIT 1)
+                    EXISTS (SELECT 1 FROM crr_temp WHERE time_travelling = 0 LIMIT 1)
                 ON CONFLICT (type, tbl_name, col_id, pk, version) DO UPDATE SET
                     value = EXCLUDED.value, 
                     site_id = EXCLUDED.site_id, 
@@ -973,12 +960,13 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
             AFTER DELETE ON ${tblName}
             FOR EACH ROW
             BEGIN
-                INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version)
+                INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                 SELECT 'delete', '${tblName}', 'tombstone', ${getPk("delete")}, 1, '${db.siteId}',
-                        (SELECT time FROM crr_hlc LIMIT 1), 
-                        (SELECT time FROM crr_hlc LIMIT 1),
-                        '0'
-                WHERE EXISTS (SELECT 1 FROM crr_clients WHERE is_me = 1 AND time_travelling = 0 LIMIT 1)
+                        (SELECT time FROM crr_temp LIMIT 1), 
+                        (SELECT time FROM crr_temp LIMIT 1),
+                        '0',
+                        (SELECT document FROM crr_temp LIMIT 1)
+                WHERE EXISTS (SELECT 1 FROM crr_temp WHERE time_travelling = 0 LIMIT 1)
                 ;
             END;
         `;
@@ -1019,22 +1007,3 @@ export const getChangeSets = (changes: Change[]): Change[][] => {
     return groups;
 }
 
-const pkEqual = (db: SqliteDB, tblName: string, pk: string) => {
-    return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} = '${value}'`).join(' AND ') + ")";
-}
-
-const pkNotEqual = (db: SqliteDB, tblName: string, pk: string) => {
-    return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} != '${value}'`).join(' AND ') + ")";
-}
-
-const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, value: any][] => {
-    if (typeof pk !== "string") {
-        console.error(`Primary-keys other than strings are not yet supported. Received primary-key with value ${pk} of type ${typeof pk}`);
-    }
-
-    const pkCols = db.pks[tblName];
-    assert(pkCols.length > 0);
-    const values = pk.split('|');
-    assert(pkCols.length === values.length);
-    return pkCols.map((colId, i) => [colId, values[i]]);
-}

@@ -1,4 +1,4 @@
-// TODO:
+// @TODO:
 //    - Fix z-index overlapping with underlying application. Maybe pick some high z-indicies that users unlikely will use
 
 import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
@@ -387,7 +387,7 @@ export const Inspector = ({ children }) => {
                             <thead className="flex-1 bg-gray-200 sticky top-0 w-full">
                                 <tr className="w-full">
                                     {mode === 'data' && columns && (columns.map((c, i) => (
-                                        <th onClick={() => orderByColumn(c.name)} key={i} className="border-r border-gray-50">
+                                        <th onClick={() => orderByColumn(c.name)} key={i} className="px-1 border-r border-gray-50">
                                             <div className="flex justify-center items-center">
                                                 <p className="text-center font-semibold">{c.name}</p>
                                                 {orderBy[st]?.columnName === c.name && orderBy[st]?.direction === 'ASC' && <ChevronUp className="w-4 h-4 fill-gray-600" />}
@@ -396,12 +396,12 @@ export const Inspector = ({ children }) => {
                                         </th>
                                     )))}
                                     {mode === 'structure' && columns && Object.keys(columns[0]).map((name, i) => (
-                                        <th key={i} className="border-r border-gray-50">
+                                        <th key={i} className="px-1 border-r border-gray-50">
                                             {name}
                                         </th>
                                     ))}
                                     {mode === 'query' && sqlEditorResults && sqlEditorResults.columns.map((name, i) => (
-                                        <th key={i} className="border-r border-gray-50">
+                                        <th key={i} className="px-1 border-r border-gray-50">
                                             {name}
                                         </th>
                                     ))}
@@ -411,15 +411,15 @@ export const Inspector = ({ children }) => {
                                 {mode === 'data' && rows && rows.map((row, rowIndex) => (
                                     <tr
                                         key={rowIndex}
-                                        className={twMerge(`flex-1 h-8 truncate overflow-scroll ${rowIndex % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'} ${isSelected('row', rowIndex) && 'bg-blue-400 text-white'}`)}
+                                        className={twMerge(`flex-1 h-8 truncate overflow-scroll ${rowIndex % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'} ${isSelected('row', rowIndex) && 'bg-blue-500 text-white'}`)}
                                         onClick={(e) => handleClickRow(e, rowIndex)}
                                     >
                                         {rowValues(row).map((v: any, colIndex) => (
-                                            <td key={colIndex}>
+                                            <td className="px-1 border-r border-gray-50" key={colIndex} onDoubleClick={() => beginEditColumnValue(rowIndex, colIndex)}>
                                                 {isEditingColumn(rowIndex, colIndex) && (
                                                     <input
                                                         id="tw_input_col_value"
-                                                        className="w-full border-r border-gray-50"
+                                                        className="w-full"
                                                         type="text"
                                                         name="col_value"
                                                         value={editingColumnValue}
@@ -429,7 +429,7 @@ export const Inspector = ({ children }) => {
                                                     />
                                                 )}
                                                 {!isEditingColumn(rowIndex, colIndex) && (
-                                                    <p className="border-r border-gray-50" onDoubleClick={() => beginEditColumnValue(rowIndex, colIndex)}>
+                                                    <p>
                                                         {v}
                                                     </p>
                                                 )}
@@ -439,12 +439,12 @@ export const Inspector = ({ children }) => {
                                 ))}
                                 {mode === 'structure' && columns && columns.map((col, i) => (
                                     <tr key={i} className={`flex-1 h-8 truncate overflow-scroll ${i % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'}`}>
-                                        {Object.values(col).map((v: any, i) => <td key={i} className="border-r border-gray-50">{v}</td>)}
+                                        {Object.values(col).map((v: any, i) => <td key={i} className="px-1 border-r border-gray-50">{v}</td>)}
                                     </tr>
                                 ))}
                                 {mode === 'query' && sqlEditorResults && sqlEditorResults.rows.map((row, i) => (
                                     <tr key={i} className={`flex-1 h-8 truncate overflow-scroll ${i % 2 === 0 ? 'bg-gray-100' : 'bg-gray-200'}`}>
-                                        {Object.values(row).map((v: any, i) => <td key={i} className="border-r border-gray-50">{v}</td>)}
+                                        {Object.values(row).map((v: any, i) => <td key={i} className="px-1 border-r border-gray-50">{v}</td>)}
                                     </tr>
                                 ))}
                             </tbody>

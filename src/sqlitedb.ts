@@ -1,8 +1,8 @@
-import { compactChanges, saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
-import { pkEncodingOfRow, sqlExplainExec, sqlDetermineOperation, sqlAsSelectStmt, generateUniqueId } from "./utils.ts"
+import { saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
+import { pkEncodingOfRow, sqlExplainExec, generateUniqueId } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
-import { checkout, commit, discardChanges, preparePull, preparePush, PullData, PushData, receivePull, receivePush } from "./versioning.ts";
+import { checkout, Commit, commit, discardChanges, Document, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits } from "./versioning.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -39,13 +39,11 @@ export class SqliteDB {
 
     #debug = false;
     mp: MessagePort
-    capturingChanges: boolean
     deleteRowidToPk: { [rowid: string]: string }
 
     constructor(name: string, mp: MessagePort) {
         this.name = name;
         this.mp = mp;
-        this.capturingChanges = false;
         this.deleteRowidToPk = {};
         this.ready = false;
 
@@ -60,25 +58,12 @@ export class SqliteDB {
         this.mp.addEventListener('message', (event) => {
             if (event.data.type === 'change') {
                 bcUpdateHook.postMessage(event.data.change);
-                this.onChange(event.data.change);
             }
             bc.postMessage(event.data);
         });
 
         // Enable foreign key constraints
         // this.exec(`PRAGMA foreign_keys = ON`, []);
-    }
-
-    async onChange(change: SqliteUpdateHookChange) {
-        // if (this.crrColumns[change.tableName]) {
-        //     if (this.capturingChanges) {
-        //         const changes = await this.generateChanges(change, this.deleteRowidToPk);
-
-        //         await saveFractionalIndexCols(this, changes);
-        //         await saveChanges(this, changes);
-        //         await compactChanges(this, changes);
-        //     }
-        // }
     }
 
     async close(): Promise<Error> {
@@ -107,18 +92,9 @@ export class SqliteDB {
         if (err) throw err;
     }
 
-    async execTrackChanges(sql: string, params: any[]) {
-
-        const now = (new Date).getTime();
-        await this.exec(`INSERT OR REPLACE INTO "crr_hlc" (time) VALUES (?)`, [now]);
-
-        await execTrackChangesHelper(this, sql, params);
-
-        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at >= ? AND site_id = ?`, [now, this.siteId]);
-
-        // await saveFractionalIndexCols(this, appliedChanges);
-        // await saveChanges(this, appliedChanges);
-        // await compactChanges(this, appliedChanges);
+    async execTrackChanges(sql: string, params: any[], documentId = "main") {
+        const err = await execTrackChangesHelper(this, sql, params, documentId);
+        if (err) return err;
 
         const tblName = sqlExplainExec(sql);
 
@@ -149,7 +125,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc", "crr_commits"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -159,6 +135,10 @@ export class SqliteDB {
 
     async upgradeTableToCrr(tblName: string) {
         const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
+        if (columns.length === 0) {
+            console.error(`'${tblName}' is not a recognized table. Make sure it exists in the database before upgrading it to a crr`);
+            return;
+        }
         const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
         const values = columns.map(c => {
             const fk = this.fkOrNull(c, fks);
@@ -195,43 +175,49 @@ export class SqliteDB {
         this.ready = true;
     }
 
-    async getMyChanges() {
-        const client = await this.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.siteId]);
-        if (!client) return [];
-
-        const lastPushedAt = client.last_pushed_at;
-        const changes = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.siteId]);
-        return changes;
+    async getUncommittedChanges(documentId = "main") {
+        const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) return [];
+        
+        const uncommittedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
+        return uncommittedChanges;
+    }
+    async getUncommittedChangeCount(documentId = "main") {
+        const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) return 0;
+        
+        const row = await this.first<{count: number}>(`SELECT COUNT(*) as count FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
+        return row!.count;
     }
 
-    async preparePush() {
-        return await preparePush(this);
+    async preparePushCommits(documentId = "main") {
+        return await preparePushCommits(this, documentId);
     }
 
-    async preparePull() {
-        return await preparePull(this);
+    async preparePullCommits() {
+        return await preparePullCommits(this);
     }
 
-    /** Should only be called by a server database */
-    async receivePush(push: PushData) {
-        return await receivePush(this, push);
+    /** @Important Should only be called by a server database */
+    async receivePushCommits(push: PushRequest) {
+        return await receivePushCommits(this, push);
     }
 
-    /** Should only be called by a server database */
-    async receivePull(pull: PullData) {
-        return await receivePull(this, pull);
+    /** @Important Should only be called by a server database */
+    async receivePullCommits(pull: PullRequest) {
+        return await receivePullCommits(this, pull);
     }
 
-    async commit(message: string) {
-        return await commit(this, message);
+    async commit(message: string, documentId = "main") {
+        return await commit(this, message, documentId);
     }
 
     async checkout(commitId: string) {
         await checkout(this, commitId);
     }
 
-    async discardChanges() {
-        await discardChanges(this);
+    async discardChanges(documentId = "main") {
+        await discardChanges(this, documentId);
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
@@ -401,35 +387,35 @@ export const assignSiteId = async (db: SqliteDB) => {
     }
 }
 
-export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: any[]) => {
+export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: any[], documentId = "main") => {
+    // @TODO: This will become a place where we would actually create a new hybrid logical clock.
+
     try {
+        const doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) {
+            await db.exec(`INSERT OR IGNORE INTO "crr_documents" (id, head) VALUES (?, ?)`, [documentId, null]);
+        }
+        const now = (new Date).getTime();
+        await db.execOrThrow(`INSERT OR REPLACE INTO "crr_temp" (time, document) VALUES (?, ?)`, [now, documentId]);
+
         const tblName = sqlExplainExec(sql);
-        const operation = sqlDetermineOperation(sql);
 
         if (db.crrColumns[tblName] === undefined) {
             console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it`);
             return;
         }
 
-        // const deleteRowidToPk: { [rowid: string]: string } = {};
-        // if (operation === 'delete') {
-        //     // Turn the delete stmt into a select stmt to get which rows are being affected.
-        //     const deleteAsSelectQuery = sqlAsSelectStmt(sql) as string;
-        //     const rows = await db.select<{ rowid: bigint }[]>(deleteAsSelectQuery, params);
-        //     for (const row of rows) {
-        //         const pk = pkEncodingOfRow(db, tblName, row);
-        //         deleteRowidToPk['' + row.rowid] = pk;
-        //     }
-        //     db.deleteRowidToPk = deleteRowidToPk;
-        // }
-
-        db.capturingChanges = true;
         await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, [], { notify: false });
         await db.exec(sql, params, { notify: false });
         await db.exec(`COMMIT;`, [], { notify: false });
-        db.capturingChanges = false;
+
+        const appliedChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at = ? AND site_id = ?`, [now, db.siteId]);
+
+        await saveFractionalIndexCols(db, appliedChanges);
+        await saveChanges(db, appliedChanges);
+        // await compactChanges(db, appliedChanges);
     } catch (e) {
-        console.error(e);
+        await db.exec(`ROLLBACK;`, [], { notify: false });
         return e;
     }
 }

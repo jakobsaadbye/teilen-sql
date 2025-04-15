@@ -1,8 +1,8 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { Change, Client, compactChanges, CrrColumn, saveChanges, saveFractionalIndexCols } from "./change.ts";
+import { Change, Client, CrrColumn } from "./change.ts";
 import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
-import { checkout, commit, discardChanges, preparePull, preparePush, PullData, PushData, receivePull, receivePush } from "./versioning.ts";
+import { checkout, commit, discardChanges, Document, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits } from "./versioning.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
@@ -46,22 +46,9 @@ export class SqliteDBWrapper {
         };
     }
 
-    async execTrackChanges(sql: string, params: any[]) {
-        // TODO: This will become a place where we would actually create a new hybrid logical clock.
-        // Note:
-        //       It is only here in the wrapper for the server as we don't have access to the updateHook, so change
-        //       generation is purely done in triggers which greatly limits what we can do. Thus we insert things into tables before
-        //       the triggers run so they can query computed values
-        const now = (new Date).getTime();
-        await this.exec(`INSERT OR REPLACE INTO "crr_hlc" (time) VALUES (?)`, [now]);
-
-        await execTrackChangesHelper(this, sql, params);
-
-        const appliedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at = ? AND site_id = ?`, [now, this.siteId]);
-
-        await saveFractionalIndexCols(this, appliedChanges);
-        await saveChanges(this, appliedChanges);
-        await compactChanges(this, appliedChanges);
+    async execTrackChanges(sql: string, params: any[], documentId = "main") {
+        const err = await execTrackChangesHelper(this, sql, params, documentId);
+        return err;
     }
 
     async first<T>(sql: string, params: any[]): Promise<T | undefined> {
@@ -84,7 +71,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_hlc", "crr_commits"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -124,43 +111,42 @@ export class SqliteDBWrapper {
         await this.extractPks();
     }
 
-    async getMyChanges() {
-        const client = await this.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.siteId]);
-        if (!client) return;
+    async getUncommittedChanges(documentId = "main") {
+        const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) return [];
 
-        const lastPushedAt = client.last_pushed_at;
-        const changes = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.siteId]);
-        return changes;
+        const uncommittedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
+        return uncommittedChanges;
     }
 
-    async preparePush() {
-        return await preparePush(this);
+    async preparePushCommits(documentId = "main") {
+        return await preparePushCommits(this, documentId);
     }
 
     async preparePull() {
-        return await preparePull(this);
+        return await preparePullCommits(this);
     }
 
-    /** Should only be called by a server database */
-    async receivePush(push: PushData) {
-        return await receivePush(this, push);
+    /** @Important Should only be called by a server database */
+    async receivePushCommits(push: PushRequest) {
+        return await receivePushCommits(this, push);
     }
 
-    /** Should only be called by a server database */
-    async receivePull(pull: PullData) {
-        return await receivePull(this, pull);
+    /** @Important Should only be called by a server database */
+    async receivePullCommits(pull: PullRequest) {
+        return await receivePullCommits(this, pull);
     }
 
-    async commit(message: string) {
-        return await commit(this, message);
+    async commit(message: string, documentId = "main") {
+        return await commit(this, message, documentId);
     }
 
     async checkout(commitId: string) {
         await checkout(this, commitId);
     }
 
-    async discardChanges() {
-        await discardChanges(this);
+    async discardChanges(documentId = "main") {
+        await discardChanges(this, documentId);
     }
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {

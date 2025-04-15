@@ -4,8 +4,8 @@ import { assignSiteId } from "../src/sqlitedb.ts";
 import { attachChangeGenerationTriggers } from "../src/change.ts";
 
 export const setupTwoDatabases = async (tables: string) => {
-    const _A = new Database("./tests/db_A.db", { int64: true });
-    const _B = new Database("./tests/db_B.db", { int64: true });
+    const _A = new Database("./tests/db/A.db", { int64: true });
+    const _B = new Database("./tests/db/B.db", { int64: true });
 
     const A = new SqliteDBWrapper(_A) as SqliteDB;
     const B = new SqliteDBWrapper(_B) as SqliteDB;
@@ -35,9 +35,9 @@ export const setupTwoDatabases = async (tables: string) => {
 }
 
 export const setupThreeDatabases = async (tables: string) => {
-    const _A = new Database("./tests/db_A.db", { int64: true });
-    const _B = new Database("./tests/db_B.db", { int64: true });
-    const _S = new Database("./tests/db_S.db", { int64: true });
+    const _A = new Database("./tests/db/A.db", { int64: true });
+    const _B = new Database("./tests/db/B.db", { int64: true });
+    const _S = new Database("./tests/db/S.db", { int64: true });
 
     const A = new SqliteDBWrapper(_A) as SqliteDB;
     const B = new SqliteDBWrapper(_B) as SqliteDB;
@@ -76,8 +76,8 @@ export const setupThreeDatabases = async (tables: string) => {
 }
 
 export const setupTwoNonFinalizedDatabases = async (tables: string) => {
-    const _A = new Database("./tests/db_A.db", { int64: true });
-    const _B = new Database("./tests/db_B.db", { int64: true });
+    const _A = new Database("./tests/db/A.db", { int64: true });
+    const _B = new Database("./tests/db/B.db", { int64: true });
 
     const A = new SqliteDBWrapper(_A) as SqliteDB;
     const B = new SqliteDBWrapper(_B) as SqliteDB;
@@ -104,4 +104,12 @@ const dropAllTables = async (db: SqliteDB) => {
     for (const table of tables) {
         await db.exec(`DROP TABLE IF EXISTS "${table.name}"`, []);
     }
+}
+
+export const delay = async (milliseconds: number) => {
+    await new Promise((resolve, reject) => {
+        setTimeout(() => {
+            resolve(true);
+        }, milliseconds);
+    });
 }

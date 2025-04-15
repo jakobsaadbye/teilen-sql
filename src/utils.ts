@@ -1,4 +1,4 @@
-import type { SqliteDB } from "@/src/sqlitedb.ts";
+import type { SqliteDB } from "./sqlitedb.ts";
 
 type SqlOperation = "none" | "select" | "insert" | "update" | "delete" | "pragma" | "explain";
 
@@ -40,6 +40,25 @@ export const sqlAsSelectStmt = (sql: string) => {
 /* Generates a comma seperated list of placeholders for the length of the array */
 export const sqlPlaceholders = (a: any[]) => {
     return `${a.map(_ => `?`).join(',')}`;
+}
+
+/** Generates a list of M placeholder lists with N placeholders in each 
+ * 
+ *  E.g N=2, M=3 would give ```(?, ?), (?, ?), (?, ?)```
+*/
+export const sqlPlaceholdersNxM = (n: number, m: number) => {
+    let placeholderLists: string[] = [];
+    for (let i = 0; i < m; i++) {
+        let placerholders: string[] = [];
+        for (let j = 0; j < n; j++) {
+            placerholders[j] = "?";
+        }
+        const oneList = `(${placerholders.join(',')})`;
+        placeholderLists[i] = oneList;
+    }
+
+    const result = placeholderLists.join(', ');
+    return result;
 }
 
 /** Generates a set of placeholders each the length of the amount of keys in objects of a.
@@ -139,7 +158,31 @@ export const pkEncodingOfRow = (db: SqliteDB, tblName: string, row: any) => {
     return Object.entries(row).filter(([colId, _]) => pkCols.includes(colId)).map(([_, value]) => value).join('|');
 }
 
-export const assert = (expr: unknown, msg?: string): asserts expr => {
+export const pksEqual = (db: SqliteDB, tblName: string, pks: string[]) => {
+    return pks.map(pk => pkEqual(db, tblName, pk)).join("OR")
+}
+
+export const pkEqual = (db: SqliteDB, tblName: string, pk: string) => {
+    return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} = '${value}'`).join(' AND ') + ")";
+}
+
+export const pkNotEqual = (db: SqliteDB, tblName: string, pk: string) => {
+    return "(" + decodePk(db, tblName, pk).map(([colId, value]) => `${colId} != '${value}'`).join(' AND ') + ")";
+}
+
+export const decodePk = (db: SqliteDB, tblName: string, pk: string): [colId: string, value: any][] => {
+    if (typeof pk !== "string") {
+        console.error(`Primary-keys other than strings are not yet supported. Received primary-key with value ${pk} of type ${typeof pk}`);
+    }
+
+    const pkCols = db.pks[tblName];
+    assert(pkCols.length > 0);
+    const values = pk.split('|');
+    assert(pkCols.length === values.length);
+    return pkCols.map((colId, i) => [colId, values[i]]);
+}
+
+export function assert(expr: unknown, msg?: string): asserts expr {
     if (!expr) {
         throw new Error(msg ?? "Assertion failed");
     }
@@ -181,5 +224,25 @@ export const insertRows = async (db: SqliteDB, tblName: string, rows: any[]) => 
 
         const batch = rows.slice(start, end);
         await insertRowsHelper(db, tblName, batch);
+    }
+}
+
+export const deleteRowsHelper = async (db: SqliteDB, tblName: string, pks: string[]) => {
+    await db.exec(`DELETE FROM "${tblName}" WHERE ${pksEqual(db, tblName, pks)}`, []);
+}
+
+export const deleteRows = async (db: SqliteDB, tblName: string, pks: string[]) => {
+    if (pks.length === 0) return;
+
+    const threshold = 750;
+
+    const rounds = Math.ceil(pks.length / threshold);
+    for (let i = 0; i < rounds; i++) {
+        const start = i * threshold;
+        let end = start + threshold;
+        if (end >= pks.length) end = pks.length;
+
+        const batch = pks.slice(start, end);
+        await deleteRowsHelper(db, tblName, batch);
     }
 }
