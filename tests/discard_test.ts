@@ -1,11 +1,10 @@
 import { SqliteDB, SqliteDBWrapper, applyChanges, insertCrrTablesStmt, createServerDb, CrrColumn, assert, generateUniqueId, sqlPlaceholdersMulti } from "../index.ts";
 import { assertEquals, assertLess, assertGreater, assertExists } from "jsr:@std/assert";
-import { setupThreeDatabases, setupTwoDatabases, setupTwoNonFinalizedDatabases } from "./util.ts";
+import { setupThreeDatabases, setupTwoDatabases, setupThreeNonFinalizedDatabases, Todo } from "./_common.ts";
 import { receivePushCommits, Commit, applyPull, receivePushResponse } from "../src/versioning.ts";
 import { attachChangeGenerationTriggers, Change } from "../src/change.ts";
-import { Todo } from "@/tests/main_test.ts";
 
-Deno.test("discard changes small", async () => {
+Deno.test("Discard changes small", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,
@@ -28,7 +27,7 @@ Deno.test("discard changes small", async () => {
     assertExists(todo);
 });
 
-Deno.test("discard changes two documents", async () => {
+Deno.test("Discard changes two documents", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,
@@ -54,7 +53,7 @@ Deno.test("discard changes two documents", async () => {
     assertEquals(docAChanges.length, 0);
 });
 
-Deno.test.ignore("discard changes big", async () => {
+Deno.test.ignore("Discard changes big", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,

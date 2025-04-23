@@ -192,6 +192,10 @@ export const unique = (arr: any[]) => {
     return [...new Set(arr)];
 }
 
+export const flatten = <T>(aoa: T[][]): T[] => {
+    return aoa.reduce((result, array) => {result.push(...array); return result}, [] as T[]);
+}
+
 export const generateUniqueId = () => {
     return crypto.randomUUID().split("-")[0];
 }

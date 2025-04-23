@@ -1,16 +1,36 @@
 import { SqliteDB, applyChanges } from "../index.ts";
 import { assertEquals, assertLess, assertExists } from "jsr:@std/assert";
-import { delay, setupTwoDatabases } from "./util.ts";
-import { Commit } from "../src/versioning.ts";
+import { delay, pullCommits, pushCommits, randomTodoStrings, setupThreeDatabases, setupTwoDatabases, todoTable } from "./_common.ts";
+import { Commit, getCommitGraph, printCommitGraph } from "../src/versioning.ts";
 
 
-export type Todo = {
-    id: string
-    name: string
-    finished: boolean
-}
+Deno.test.ignore("Commit Graph", async () => {
+    const [A, B, S] = await setupThreeDatabases(todoTable);
 
-Deno.test("change generation", async () => {
+    for (let i = 0; i < 3; i++) {
+        const randomTodoName = randomTodoStrings[i];
+        await A.execTrackChanges(`INSERT INTO "todos" VALUES ('${i}', '${randomTodoName}', 0)`, []);
+        await A.commit(randomTodoName);
+        if (i === 0) {
+            // Make a common root commit
+            await pushCommits(A, S);
+            await pullCommits(B, S);
+        }
+    }
+
+    await pushCommits(A, S);
+
+    await B.execTrackChanges(`INSERT INTO "todos" VALUES ('99', 'Buy coffee}', 0)`, []);
+    await B.commit("Buy coffee");
+    await pushCommits(B, S); // This will pull from B creating a merge
+
+    const G = await getCommitGraph(B);
+    assertExists(G);
+    printCommitGraph(G);
+})
+
+
+Deno.test("Change generation", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id primary key,
@@ -36,7 +56,7 @@ Deno.test("change generation", async () => {
     assertLess(prevUpdate.applied_at, newUpdate.applied_at);
 });
 
-Deno.test("simple merge of A into empty B", async () => {
+Deno.test("Simple merge of A into empty B", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id primary key,
@@ -62,7 +82,7 @@ Deno.test("simple merge of A into empty B", async () => {
 
 
 
-Deno.test("simple combined merge of A U B", async () => {
+Deno.test("Simple combined merge of A U B", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,

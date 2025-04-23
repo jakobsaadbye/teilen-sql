@@ -18,9 +18,10 @@ export type CrrColumn = {
     tbl_name: string
     col_id: string
     type: 'lww' | 'fractional_index'
-    fk: string | null // format is 'table|col_id'
-    fk_on_delete: 'CASCADE' | 'RESTRICT'
-    parent_col_id: string // set if fractional_index otherwise empty string
+    fk: string | null               // format is 'table|col_id'
+    fk_on_delete: null | 'CASCADE' | 'RESTRICT' | "NO ACTION"
+    parent_col_id: string | null    // set if column type is fractional_index
+    manual_conflict: boolean
 };
 
 export type OpType = 'insert' | 'update' | 'delete'
@@ -228,13 +229,12 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     // Patch any fractional index columns that might have collided. 
     // NOTE(*important*): Must run after all the changes have been applied 
     // so that all rows are known about
-    await fixFractionalIndexCollisions(db, changeSets, false);
+    await fixFractionalIndexCollisions(db, changeSets);
 
     // @Investigate: Is this necessary???
     // await updateLastPulledAtFromPeers(db, changes);
 
     await db.exec(`UPDATE "crr_temp" SET time_travelling = 0`, []);
-
     await db.exec(`COMMIT;`, []);
 
     return appliedChanges;

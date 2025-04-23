@@ -1,8 +1,8 @@
 import { saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
-import { pkEncodingOfRow, sqlExplainExec, generateUniqueId } from "./utils.ts"
+import { pkEncodingOfRow, sqlExplainExec, generateUniqueId, flatten, sqlPlaceholdersNxM } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
 import { assert } from "./utils.ts";
-import { checkout, Commit, commit, discardChanges, Document, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits } from "./versioning.ts";
+import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, getDocumentSnapshot, ConflictChoice, resolveConflict, getPushCount } from "./versioning.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -26,7 +26,11 @@ export type SqliteForeignKey = {
     table: string
     from: string
     to: string
-    on_delete: 'CASCADE' | 'RESTRICT'
+    on_delete: null | 'CASCADE' | 'RESTRICT' | "NO ACTION"
+}
+
+export const defaultUpgradeOptions = {
+    manualConflictColumns: [] as string[]     // List of column names that needs manual conflict resolution. Only applicable for git-style versioning 
 }
 
 export class SqliteDB {
@@ -133,23 +137,51 @@ export class SqliteDB {
         }
     }
 
-    async upgradeTableToCrr(tblName: string) {
-        const columns = await this.select<any[]>(`PRAGMA table_info('${tblName}')`, []);
+    async upgradeTableToCrr(tblName: string, options = defaultUpgradeOptions) {
+        const columns = await this.select<SqliteColumnInfo[]>(`PRAGMA table_info('${tblName}')`, []);
         if (columns.length === 0) {
             console.error(`'${tblName}' is not a recognized table. Make sure it exists in the database before upgrading it to a crr`);
             return;
         }
+
         const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
-        const values = columns.map(c => {
-            const fk = this.fkOrNull(c, fks);
-            if (fk) return `('${tblName}', '${c.name}', 'lww', '${fk.table}|${fk.to}', '${fk.on_delete}', null)`;
-            else return `('${tblName}', '${c.name}', 'lww', null, null, null)`;
-        }).join(',');
+
+        const crrColumns: CrrColumn[] = [];
+        for (const col of columns) {
+            const fkInfo = this.fkOrNull(col, fks);
+
+            let fk: string | null = null;
+            let fkOnDelete = null;
+            if (fkInfo) {
+                fk = `${fkInfo.table}|${fkInfo.to}`;
+                fkOnDelete = fkInfo.on_delete;
+            }
+
+            let manualConflict = false;
+            if (options.manualConflictColumns.length > 0) {
+                manualConflict = options.manualConflictColumns.find(colName => colName === col.name) !== undefined;
+            }
+
+            const crrColumn: CrrColumn = {
+                tbl_name: tblName,
+                col_id: col.name,
+                type: "lww",
+                fk: fk,
+                fk_on_delete: fkOnDelete,
+                parent_col_id: null,
+                manual_conflict: manualConflict ? 1 : 0,
+            }
+
+            crrColumns.push(crrColumn);
+        }
+
+        const values = flatten(crrColumns.map(col => Object.values(col)));
+
         const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id)
-            VALUES ${values}
+            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id, manual_conflict)
+            VALUES ${sqlPlaceholdersNxM(7, crrColumns.length)}
             ON CONFLICT DO NOTHING
-        `, []);
+        `, values);
         if (err) return console.error(err);
     }
 
@@ -175,6 +207,9 @@ export class SqliteDB {
         this.ready = true;
     }
 
+    //////////////////////////
+    //  Git-style versioning
+    //////////////////////////
     async getUncommittedChanges(documentId = "main") {
         const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
         if (!doc) return [];
@@ -219,6 +254,31 @@ export class SqliteDB {
     async discardChanges(documentId = "main") {
         await discardChanges(this, documentId);
     }
+
+    /** Gets conflicts for a specific table in a document */
+    async getConflicts<T>(table: string, documentId = "main") {
+        return await getConflicts<T>(this, table, documentId);
+    }
+
+    /**
+     * Resolve a single conflict
+     * @param pk Encoded primary-key of the conflicting row. *Hint*: You can use ```pkEncodingOfRow``` to obtain it if the table contains multiple primary-keys.
+     */
+    async resolveConflict(table: string, pk: string, documentId = "main", choice: ConflictChoice) {
+        return await resolveConflict(this, table, pk, documentId, choice);
+    }
+
+    /** Gets a snapshot of a document at a certain commit */
+    async getDocumentSnapshot(commit: Commit) {
+        return await getDocumentSnapshot(this, commit);
+    }
+
+    /** Gets the non-pushed commit count for a given document */
+    async getPushCount(documentId = "main") {
+        return await getPushCount(this, documentId);
+    }
+
+    //////////////////////////
 
     private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
         const fk = fks.find(fk => fk.from === col.name);

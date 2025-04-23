@@ -1,6 +1,6 @@
-import { setupThreeDatabases } from "./util.ts";
+import { setupThreeDatabases } from "./_common.ts";
 
-Deno.test("adding changes to different documents", async () => {
+Deno.test("Adding changes to different documents", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,
@@ -16,21 +16,3 @@ Deno.test("adding changes to different documents", async () => {
     await A.execTrackChanges(`INSERT INTO "todos" VALUES ('2', 'Buy Juice', 0)`, [], "B");
     await A.commit("We need juice", "B");
 });
-
-Deno.test("asdjasdjasdasd", async () => {
-    const tables = `
-        CREATE TABLE IF NOT EXISTS "todos" (
-            id text primary key,
-            name text,
-            finished boolean
-        );
-    `;
-
-    const [A, B, S] = await setupThreeDatabases(tables);
-
-    await A.execTrackChanges(`INSERT INTO "todos" VALUES ('1', 'Buy Milk', 0)`, []);
-    await A.commit("We need milk");
-    // await A.execTrackChanges(`UPDATE "todos" SET finished = 1 WHERE id = '1'`, []);
-    // await A.commit("Got it!");
-})
-

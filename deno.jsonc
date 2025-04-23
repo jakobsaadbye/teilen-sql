@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "exports": "./index.ts",
   "tasks" : {
-        "test" : "deno test --no-check --allow-all ./tests/"
+        "test" : "deno test --no-check --allow-all ./tests/",
+        "test-main" : "deno test --no-check --allow-all ./tests/main_test.ts"
   },
   "license": "MIT",
   "nodeModulesDir": "auto",

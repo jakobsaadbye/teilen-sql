@@ -343,11 +343,6 @@ export const Inspector = ({ children }) => {
                                 <p className="text-sm font-medium">SQL</p>
                             </button>
                         </div>
-                        <div>
-                            <button onClick={() => deleteEntireDatabase()} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Delete database">
-                                <p className="text-sm font-medium">DEL</p>
-                            </button>
-                        </div>
                     </div>
                     <div className="flex space-x-2 items-center">
                         {fullscreen && (
@@ -364,18 +359,18 @@ export const Inspector = ({ children }) => {
                     </div>
                 </header>
                 <div className="relative flex h-full w-full">
-                    <section className="bg-gray-300 p-2">
+                    <section className="min-w-42 px-2 pb-12 bg-gray-300 overflow-y-auto">
                         <h2 className="text-lg">Tables</h2>
-                        <ul className="p-2">
+                        <ul className="ml-1 mr-2 mt-1">
                             {tables.map((table, i) => {
                                 return (
                                     <div
                                         key={i}
                                         onClick={(e) => handleClickTable(e, i)}
                                         onContextMenu={(e) => handleClickTable(e, i)}
-                                        className={`flex space-x-1 px-2 hover:bg-gray-200 ${isSelected('table', i) && 'bg-gray-100'}`}
+                                        className={`flex gap-x-1 pr-2 hover:bg-gray-200 ${isSelected('table', i) && 'bg-gray-100'}`}
                                     >
-                                        <TableIcon className="w-6 h-6 fill-blue-400" />
+                                        <TableIcon className="min-w-6 min-h-6 fill-blue-400" />
                                         <p className="select-none">{table.name}</p>
                                     </div>
                                 )

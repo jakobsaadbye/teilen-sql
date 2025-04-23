@@ -62,7 +62,14 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
 
     useEffect(() => {
         let tableDeps: string[] | undefined = undefined;
-        if (typeof (sql) === 'function') tableDeps = options?.tableDependencies ?? [];
+        if (typeof (sql) === 'function') {
+            if (!options?.tableDependencies || options.tableDependencies.length === 0) {
+                console.warn(`No table dependencies was provided to arbitrary query-function '${sql}'. Please pass 'tableDependencies' as an option to specify the query-functions' dependencies`);
+                tableDeps = [];
+            } else {
+                tableDeps = options.tableDependencies;
+            }
+        } 
         else {
             if (options && options.tableDependencies) tableDeps = options.tableDependencies;
             else {
@@ -88,7 +95,7 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
             run
                 .then(data => {
                     if (!isMounted) return;
-                    if (options?.first) {
+                    if (options?.first && typeof(sql) === "string") {
                         if (data.length > 0) {
                             setData(data[0]);
                         } else {
@@ -133,7 +140,7 @@ export const useQuery = <T>(sql: string | QueryFunc<T>, params: any[], options?:
             isMounted = false;
             bc.close();
         }
-    }, [sql, options?.fireIf, ...params ?? []]);
+    }, [typeof(sql) === "string" ? sql : false, options?.fireIf, ...params ?? []]);
 
     return { data, error, isLoading };
 }

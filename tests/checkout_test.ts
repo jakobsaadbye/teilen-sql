@@ -1,9 +1,9 @@
-import { setupTwoDatabases } from "@/tests/util.ts";
+import { setupTwoDatabases, Todo } from "./_common.ts";
 import { assertEquals } from "jsr:@std/assert/assert-equals";
 import { assertExists } from "jsr:@std/assert/assert-exists";
-import { Todo } from "@/tests/main_test.ts";
+import { assert } from "@/index.ts";
 
-Deno.test("checkout back and forth", async () => {
+Deno.test("Checkout back and forth", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,
@@ -19,6 +19,9 @@ Deno.test("checkout back and forth", async () => {
 
     await A.execTrackChanges(`UPDATE "todos" SET name='Buy Coffee', finished=1 WHERE id = '1'`, []);
     const latestCommit = await A.commit("Updated status of todo to finished. Jahuuu");
+
+    assert(firstCommit);
+    assert(latestCommit);
 
     await A.checkout(firstCommit.id);
 

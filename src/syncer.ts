@@ -1,6 +1,6 @@
 import { applyChanges, Change, Client } from "./change.ts";
 import { SqliteDB } from "./sqlitedb.ts";
-import { unique } from "./utils.ts";
+import { unique, assert } from "./utils.ts";
 import { applyPull, Commit, Document, PullResponse, PushResponse } from "./versioning.ts";
 
 type SyncEventType = "change";
@@ -158,9 +158,13 @@ export class Syncer {
             const push = await response.json() as PushResponse;
             switch (push.status) {
             case "ok": {
-                console.log(`Push completed successfully ...`);
-                console.log(push);
-                await db.exec(`UPDATE "crr_documents" SET last_pushed_commit = head, last_pulled_commit = head WHERE id = ?`, [push.documentId]);
+                await db.exec(`
+                    UPDATE "crr_documents" SET 
+                        last_pulled_at = ?,
+                        last_pushed_commit = head, 
+                        last_pulled_commit = head 
+                    WHERE id = ?
+                `, [push.appliedAt, push.documentId]);
                 return;
             }
             case "needs-pull": {
@@ -184,7 +188,7 @@ export class Syncer {
     async pullCommits(db: SqliteDB, documentId = "main") {
         if (!this.options.commitPullEndpoint) {
             console.warn(`No commit pull-endpoint was specified in the syncer options. Set 'commitPullEndpoint' as an option to pull version controlled changes`);
-            return;
+            return [];
         }
 
         const url = new URL(this.options.commitPullEndpoint);
@@ -203,23 +207,23 @@ export class Syncer {
 
             if (!response.ok) {
                 if (response.status === 404) {
-                    return;
+                    return [];
                 } else {
                     const err = await response.json();
                     console.error("Failed to pull commits. Error from server: ", err);
-                    return;
+                    return [];
                 }
             }
 
             const pull = await response.json() as PullResponse;
             switch (pull.status) {
             case "ok": {
-                return await applyPull(db, pull.packets);
+                return await applyPull(db, pull);
             }
             }
         } catch (error) {
             console.error("Failed to pull commits", error);
-            return;
+            return [];
         }
     }
 

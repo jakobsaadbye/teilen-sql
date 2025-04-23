@@ -25,6 +25,8 @@ export const insertCrrTablesStmt = `
         fk text,
         fk_on_delete text,
         parent_col_id text,
+        manual_conflict boolean,
+
         primary key(tbl_name, col_id)
     );
 
@@ -48,7 +50,8 @@ export const insertCrrTablesStmt = `
         parent text,
         message text,
         author references crr_clients(site_id),
-        created_at bigint
+        created_at bigint,
+        applied_at bigint
     );
 
     CREATE index IF NOT EXISTS crr_commits_index ON crr_commits(created_at, document);
@@ -56,8 +59,21 @@ export const insertCrrTablesStmt = `
     CREATE TABLE IF NOT EXISTS crr_documents(
         id text primary key,
         head text references crr_commits(id),
+        last_pulled_at bigint not null default 0,
         last_pulled_commit text references crr_commits(id),
         last_pushed_commit text references crr_commits(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS crr_conflicts(
+        document text references crr_documents(id),
+        tbl_name text not null,
+        pk text not null,
+        columns string,
+        base string,
+        our string,
+        their string,
+
+        primary key(document, tbl_name, pk)
     );
 
     COMMIT;

@@ -1,8 +1,8 @@
 import { assertEquals } from "jsr:@std/assert/assert-equals";
-import { delay, setupTwoNonFinalizedDatabases } from "./util.ts";
+import { delay, setupThreeNonFinalizedDatabases } from "./_common.ts";
 import { attachChangeGenerationTriggers } from "@/src/change.ts";
 
-Deno.test("fractional indexing", async () => {
+Deno.test("Fractional indexing", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "columns" (
             id text primary key
@@ -16,7 +16,7 @@ Deno.test("fractional indexing", async () => {
         );
     `;
 
-    const [A, B] = await setupTwoNonFinalizedDatabases(tables);
+    const [A, B] = await setupThreeNonFinalizedDatabases(tables);
 
     await A.upgradeAllTablesToCrr();
     await B.upgradeAllTablesToCrr();
