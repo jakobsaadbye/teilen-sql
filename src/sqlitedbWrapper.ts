@@ -1,9 +1,9 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { Change, Client, CrrColumn } from "./change.ts";
-import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper, defaultUpgradeOptions, SqliteColumnInfo } from "./sqlitedb.ts";
+import { Change, CrrColumn } from "./change.ts";
+import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper, defaultUpgradeOptions } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
-import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, getConflicts, getDocumentSnapshot, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
-import { flatten, sqlPlaceholdersNxM } from "./utils.ts";
+import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, DocumentSnapshot, getConflicts, getDocumentSnapshot, getPushCount, getSnapshotRows, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
+import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
@@ -81,51 +81,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeTableToCrr(tblName: string, options = defaultUpgradeOptions) {
-        const columns = await this.select<SqliteColumnInfo[]>(`PRAGMA table_info('${tblName}')`, []);
-        if (columns.length === 0) {
-            console.error(`'${tblName}' is not a recognized table. Make sure it exists in the database before upgrading it to a crr`);
-            return;
-        }
-
-        const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
-
-        const crrColumns: CrrColumn[] = [];
-        for (const col of columns) {
-            const fkInfo = this.fkOrNull(col, fks);
-
-            let fk: string | null = null;
-            let fkOnDelete = null;
-            if (fkInfo) {
-                fk = `${fkInfo.table}|${fkInfo.to}`;
-                fkOnDelete = fkInfo.on_delete;
-            }
-
-            let manualConflict = false;
-            if (options.manualConflictColumns.length > 0) {
-                manualConflict = options.manualConflictColumns.find(colName => colName === col.name) !== undefined;
-            }
-
-            const crrColumn: CrrColumn = {
-                tbl_name: tblName,
-                col_id: col.name,
-                type: "lww",
-                fk: fk,
-                fk_on_delete: fkOnDelete,
-                parent_col_id: null,
-                manual_conflict: manualConflict ? 1 : 0,
-            }
-
-            crrColumns.push(crrColumn);
-        }
-
-        const values = flatten(crrColumns.map(col => Object.values(col)));
-
-        const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id, manual_conflict)
-            VALUES ${sqlPlaceholdersNxM(7, crrColumns.length)}
-            ON CONFLICT DO NOTHING
-        `, values);
-        if (err) return console.error(err);
+        return await upgradeTableToCrr(this, tblName, options);
     }
 
     async upgradeColumnToFractionalIndex(tblName: string, colId: string, parentColId: string) {
@@ -203,18 +159,17 @@ export class SqliteDBWrapper {
         return await getDocumentSnapshot(this, commit);
     }
 
+    /** Gets all the rows for a particular table of document snapshot */
+    getSnapshotRows<T>(snapshot: DocumentSnapshot, tableName: string) {
+        return getSnapshotRows<T>(this, snapshot, tableName);
+    }
+
     /** Gets the non-pushed commit count for a given document */
     async getPushCount(documentId = "main") {
         return await getPushCount(this, documentId);
     }
 
     //////////////////////////
-
-    private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
-        const fk = fks.find(fk => fk.from === col.name);
-        if (fk === undefined) return null;
-        return fk
-    }
 
     private async extractPks() {
         const pks: { [tblName: string]: string[] } = {};

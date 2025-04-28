@@ -1,8 +1,9 @@
-import { saveChanges, saveFractionalIndexCols, reconstructRowFromHistory, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
-import { pkEncodingOfRow, sqlExplainExec, generateUniqueId, flatten, sqlPlaceholdersNxM } from "./utils.ts"
+import { saveChanges, saveFractionalIndexCols, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
+import { sqlExplainExec, generateUniqueId, flatten, sqlPlaceholdersNxM } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
-import { assert } from "./utils.ts";
-import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, getDocumentSnapshot, ConflictChoice, resolveConflict, getPushCount } from "./versioning.ts";
+import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, getDocumentSnapshot, ConflictChoice, resolveConflict, getPushCount, DocumentSnapshot, getSnapshotRows } from "./versioning.ts";
+import { decodeHlc, encodeHlc, newHlc, sendHlc } from "./hlc.ts";
+import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -29,8 +30,34 @@ export type SqliteForeignKey = {
     on_delete: null | 'CASCADE' | 'RESTRICT' | "NO ACTION"
 }
 
-export const defaultUpgradeOptions = {
-    manualConflictColumns: [] as string[]     // List of column names that needs manual conflict resolution. Only applicable for git-style versioning 
+export type TemporaryData = {
+    lotr: number
+    clock: string    // Encoded hybrid-logical-clock
+    time_travelling: boolean
+    document: string
+}
+
+type UpgradeOptions = {
+    /** Weather or not the table or certain columns should be replicated to other clients 
+     * @Important Non replicated columns should contain a default sql value
+    */
+    replicate?: "all" | "none" | {
+        include?: string[],
+        exclude?: string[]
+    }
+
+    /** Weather or not concurrent updates to the same cell are handled manually or resolved automatically through last-writer-wins
+     * @Note Only applicable for git-style versioning
+     */
+    manualConflict?: "all" | "none" | {
+        include?: string[],
+        exclude?: string[]
+    }
+}
+
+export const defaultUpgradeOptions: UpgradeOptions = {
+    replicate: "all",
+    manualConflict: "none"
 }
 
 export class SqliteDB {
@@ -138,51 +165,7 @@ export class SqliteDB {
     }
 
     async upgradeTableToCrr(tblName: string, options = defaultUpgradeOptions) {
-        const columns = await this.select<SqliteColumnInfo[]>(`PRAGMA table_info('${tblName}')`, []);
-        if (columns.length === 0) {
-            console.error(`'${tblName}' is not a recognized table. Make sure it exists in the database before upgrading it to a crr`);
-            return;
-        }
-
-        const fks = await this.select<SqliteForeignKey[]>(`PRAGMA foreign_key_list('${tblName}')`, []);
-
-        const crrColumns: CrrColumn[] = [];
-        for (const col of columns) {
-            const fkInfo = this.fkOrNull(col, fks);
-
-            let fk: string | null = null;
-            let fkOnDelete = null;
-            if (fkInfo) {
-                fk = `${fkInfo.table}|${fkInfo.to}`;
-                fkOnDelete = fkInfo.on_delete;
-            }
-
-            let manualConflict = false;
-            if (options.manualConflictColumns.length > 0) {
-                manualConflict = options.manualConflictColumns.find(colName => colName === col.name) !== undefined;
-            }
-
-            const crrColumn: CrrColumn = {
-                tbl_name: tblName,
-                col_id: col.name,
-                type: "lww",
-                fk: fk,
-                fk_on_delete: fkOnDelete,
-                parent_col_id: null,
-                manual_conflict: manualConflict ? 1 : 0,
-            }
-
-            crrColumns.push(crrColumn);
-        }
-
-        const values = flatten(crrColumns.map(col => Object.values(col)));
-
-        const err = await this.exec(`
-            INSERT INTO "crr_columns" (tbl_name, col_id, type, fk, fk_on_delete, parent_col_id, manual_conflict)
-            VALUES ${sqlPlaceholdersNxM(7, crrColumns.length)}
-            ON CONFLICT DO NOTHING
-        `, values);
-        if (err) return console.error(err);
+        return await upgradeTableToCrr(this, tblName, options);
     }
 
     async upgradeColumnToFractionalIndex(tblName: string, colId: string, parentColId: string) {
@@ -213,15 +196,15 @@ export class SqliteDB {
     async getUncommittedChanges(documentId = "main") {
         const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
         if (!doc) return [];
-        
+
         const uncommittedChanges = await this.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
         return uncommittedChanges;
     }
     async getUncommittedChangeCount(documentId = "main") {
         const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
         if (!doc) return 0;
-        
-        const row = await this.first<{count: number}>(`SELECT COUNT(*) as count FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
+
+        const row = await this.first<{ count: number }>(`SELECT COUNT(*) as count FROM "crr_changes" WHERE version = '0' AND document = ? ORDER BY created_at ASC`, [doc.id]);
         return row!.count;
     }
 
@@ -273,92 +256,17 @@ export class SqliteDB {
         return await getDocumentSnapshot(this, commit);
     }
 
+    /** Gets all the rows for a particular table of a document snapshot */
+    getSnapshotRows<T>(snapshot: DocumentSnapshot, tableName: string) {
+        return getSnapshotRows<T>(this, snapshot, tableName);
+    }
+
     /** Gets the non-pushed commit count for a given document */
     async getPushCount(documentId = "main") {
         return await getPushCount(this, documentId);
     }
 
     //////////////////////////
-
-    private fkOrNull(col: any, fks: SqliteForeignKey[]): SqliteForeignKey | null {
-        const fk = fks.find(fk => fk.from === col.name);
-        if (fk === undefined) return null;
-        return fk
-    }
-
-    private async generateChanges(change: SqliteUpdateHookChange, deleteRowidToPk: { [rowid: string]: string }): Promise<Change[]> {
-        switch (change.updateType) {
-            case "insert": {
-                const row = await this.first<any>(`SELECT rowid, * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
-                if (row === undefined) {
-                    console.error(`Failed to get just inserted row in table '${change.tableName}' with rowid '${change.rowid}'`);
-                    return [];
-                }
-
-                const pk = pkEncodingOfRow(this, change.tableName, row);
-                const now = (new Date()).getTime();
-                const version = "0";
-
-                const changeSet = [];
-                for (const [key, value] of Object.entries(row)) {
-                    if (key === "rowid") continue;
-                    changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0, version });
-                }
-                return changeSet;
-            }
-            case "delete": {
-                const tblName = change.tableName;
-                const now = (new Date()).getTime();
-                const version = "0";
-
-                // We use the computed deleteRowidToPk mapping to lookup the primary-key that got deleted
-                const pk = deleteRowidToPk['' + change.rowid];
-                assert(pk);
-
-                return [{ type: 'delete', tbl_name: tblName, col_id: "tombstone", pk, value: 1, site_id: this.siteId, created_at: now, applied_at: 0, version: version }];
-            };
-            case "update": {
-                const row = await this.first<any>(`SELECT * FROM "${change.tableName}" WHERE rowid = ${change.rowid}`, []);
-                if (row === undefined) {
-                    console.error(`No row was found for update`);
-                    return [];
-                };
-
-                const pk = pkEncodingOfRow(this, change.tableName, row);
-                const lastVersionOfRow = await reconstructRowFromHistory(this, change.tableName, pk);
-                if (lastVersionOfRow === undefined || Object.keys(lastVersionOfRow).length === 0) {
-                    console.log(`No prior changes was found for row with pk ${pk} in table ${change.tableName} while receiving a new update in getChangesetFromUpdate()`);
-                    return [];
-                }
-
-                const now = (new Date()).getTime();
-                const version = "0";
-
-                const changeSet = [];
-                for (const [key, value] of Object.entries(row)) {
-                    const lastValue = lastVersionOfRow[key];
-                    if (value !== lastValue) {
-                        changeSet.push({ type: change.updateType, tbl_name: change.tableName, col_id: key, pk, value, site_id: this.siteId, created_at: now, applied_at: 0, version });
-
-                        // :ModifyForeignKeyInserts
-                        // @Temporary - If the update changes the foreign-key, also update the original insert change
-                        // NOTE: We might in the future have a structure such that each column of a row
-                        // only has 1 associated change type for a row (instead of insert and update). Then there couldn't be another change to the foreign-key
-                        const fkCols = this.crrColumns[change.tableName].filter(col => col.fk);
-                        if (fkCols.length === 0) continue;
-                        const fkCol = fkCols.find(col => col.col_id === key);
-                        if (fkCol) {
-                            await this.exec(`UPDATE "crr_changes" SET value = ? WHERE type = 'insert' AND tbl_name = ? AND pk = ? AND col_id = ?`, [value, change.tableName, pk, fkCol.col_id]);
-                        }
-                    }
-                }
-
-                return changeSet;
-            };
-            default:
-                return [];
-        }
-    }
 
     private async extractPks() {
         const pks: { [tblName: string]: string[] } = {};
@@ -455,8 +363,20 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
         if (!doc) {
             await db.exec(`INSERT OR IGNORE INTO "crr_documents" (id, head) VALUES (?, ?)`, [documentId, null]);
         }
-        const now = (new Date).getTime();
-        await db.execOrThrow(`INSERT OR REPLACE INTO "crr_temp" (time, document) VALUES (?, ?)`, [now, documentId]);
+
+        // Produce a new clock value for the changes
+        let clock;
+        const temp = await db.first<TemporaryData>(`SELECT * FROM "crr_temp"`, []);
+        if (!temp) {
+            const clockHlc = newHlc();
+            clock = encodeHlc(clockHlc);
+            await db.exec(`INSERT INTO "crr_temp" (clock, document) VALUES (?, ?)`, [clock, documentId]);
+        } else {
+            let clockHlc = decodeHlc(temp.clock);
+            clockHlc = sendHlc(clockHlc);
+            clock = encodeHlc(clockHlc);
+            await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock, document) VALUES (?, ?)`, [clock, documentId]);
+        }
 
         const tblName = sqlExplainExec(sql);
 
@@ -469,7 +389,7 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
         await db.exec(sql, params, { notify: false });
         await db.exec(`COMMIT;`, [], { notify: false });
 
-        const appliedChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at = ? AND site_id = ?`, [now, db.siteId]);
+        const appliedChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE created_at = ? AND site_id = ?`, [clock, db.siteId]);
 
         await saveFractionalIndexCols(db, appliedChanges);
         await saveChanges(db, appliedChanges);

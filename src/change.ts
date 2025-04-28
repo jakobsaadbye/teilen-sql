@@ -1,11 +1,7 @@
 import { assert, pkEncodingOfRow, sqlPlaceholders, unique, insertRows, sqlPlaceholdersMulti, pkEqual, pkNotEqual } from "./utils.ts";
 import { fracMid } from "./frac.ts";
-import { SqliteDB } from "./sqlitedb.ts"
-
-// @TODO: 
-//  - Move away from timestamps and instead use something like Hybrid Logical Clocks instead. https://jaredforsyth.com/posts/hybrid-logical-clocks/
-//  - Record all the tables that got changed in applyChanges and only then notify table changes
-
+import { SqliteDB, TemporaryData } from "./sqlitedb.ts"
+import { decodeHlc, encodeHlc, newHlc, receiveHlc } from "./hlc.ts";
 
 export type Client = {
     site_id: string
@@ -22,6 +18,7 @@ export type CrrColumn = {
     fk_on_delete: null | 'CASCADE' | 'RESTRICT' | "NO ACTION"
     parent_col_id: string | null    // set if column type is fractional_index
     manual_conflict: boolean
+    replicate: boolean
 };
 
 export type OpType = 'insert' | 'update' | 'delete'
@@ -32,8 +29,8 @@ export type Change = {
     col_id: string,     // 'tombstone' when type is delete
     pk: string,         // primary-key of the changed row. If primary-key is composed of multiple columns, the format is "col_1|col_2|...|col_n"
     value: any          // when type is delete, value is either 1 (deleted) or 0 (not deleted)
-    site_id: string     // client that made the change
-    created_at: number
+    site_id: string     // client ID that made the change
+    created_at: string  // when this change was created (stored as a hybrid-logical-clock)
     applied_at: number
     version: string
     document: string
@@ -48,6 +45,8 @@ export type FkRelation = {
 };
 
 export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
+    if (changes.length === 0) return [];
+
     await db.exec(`BEGIN EXCLUSIVE TRANSACTION;`, []);
     await db.exec(`UPDATE "crr_temp" SET time_travelling = 1`, []);
 
@@ -226,13 +225,24 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
         }
     }
 
+    // Maybe update our hybrid-logical-clock
+    const theirClock = decodeHlc(changeSets[changeSets.length - 1][0].created_at);  // Because changeSets are sorted in time, the last one is their greatest clock value which we match against
+    let ourClock;
+    const temp = await db.first<TemporaryData>(`SELECT * FROM "crr_temp"`, []);
+    if (!temp) {
+        ourClock = newHlc();
+    } else {
+        ourClock = decodeHlc(temp.clock);
+    }
+    const newClock = receiveHlc(ourClock, theirClock);
+    const newClockEncoded = encodeHlc(newClock);
+    await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock)`, [newClockEncoded]);
+
+
     // Patch any fractional index columns that might have collided. 
     // NOTE(*important*): Must run after all the changes have been applied 
     // so that all rows are known about
     await fixFractionalIndexCollisions(db, changeSets);
-
-    // @Investigate: Is this necessary???
-    // await updateLastPulledAtFromPeers(db, changes);
 
     await db.exec(`UPDATE "crr_temp" SET time_travelling = 0`, []);
     await db.exec(`COMMIT;`, []);
@@ -796,8 +806,6 @@ export const saveChanges = async (db: SqliteDB, changes: Change[]) => {
         vals.push(c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt, c.version, c.document);
         return vals;
     }, [] as any[])
-    // changes.map(c => [c.type, c.tbl_name, c.col_id, c.pk, c.value, c.site_id, c.created_at, appliedAt, c.version]);
-    // const values = valueSets.reduce((acc, vals) => [...acc, ...vals], []);
 
     const sql = `
         INSERT INTO "crr_changes" (type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
@@ -903,11 +911,12 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
         }
 
         const columnInsert = (col: CrrColumn) => {
+            if (!col.replicate) return "";
             return `
                 INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                     SELECT 'insert', '${tblName}', '${col.col_id}', ${getPk("insert")}, NEW.${col.col_id}, '${db.siteId}',
-                            (SELECT time FROM crr_temp LIMIT 1), 
-                            (SELECT time FROM crr_temp LIMIT 1),
+                            (SELECT clock FROM crr_temp LIMIT 1), 
+                            (SELECT clock FROM crr_temp LIMIT 1),
                             '0',
                             (SELECT document FROM crr_temp LIMIT 1)
                     WHERE EXISTS (SELECT 1 FROM crr_temp WHERE time_travelling = 0 LIMIT 1)
@@ -916,11 +925,12 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
         }
 
         const columnUpdate = (col: CrrColumn) => {
+            if (!col.replicate) return "";
             return `
                 INSERT INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                     SELECT 'update', '${tblName}', '${col.col_id}', ${getPk("update")}, NEW.${col.col_id}, '${db.siteId}',
-                        (SELECT time FROM crr_temp LIMIT 1), 
-                        (SELECT time FROM crr_temp LIMIT 1),
+                        (SELECT clock FROM crr_temp LIMIT 1), 
+                        (SELECT clock FROM crr_temp LIMIT 1),
                         '0',
                         (SELECT document FROM crr_temp LIMIT 1)
                     WHERE OLD.${col.col_id} != NEW.${col.col_id} AND
@@ -962,8 +972,8 @@ export const attachChangeGenerationTriggers = async (db: SqliteDB) => {
             BEGIN
                 INSERT OR IGNORE INTO crr_changes(type, tbl_name, col_id, pk, value, site_id, created_at, applied_at, version, document)
                 SELECT 'delete', '${tblName}', 'tombstone', ${getPk("delete")}, 1, '${db.siteId}',
-                        (SELECT time FROM crr_temp LIMIT 1), 
-                        (SELECT time FROM crr_temp LIMIT 1),
+                        (SELECT clock FROM crr_temp LIMIT 1), 
+                        (SELECT clock FROM crr_temp LIMIT 1),
                         '0',
                         (SELECT document FROM crr_temp LIMIT 1)
                 WHERE EXISTS (SELECT 1 FROM crr_temp WHERE time_travelling = 0 LIMIT 1)
@@ -1002,7 +1012,11 @@ export const getChangeSets = (changes: Change[]): Change[][] => {
     }
 
     // Sort changes in ascending order
-    groups.sort((a, b) => a[0].created_at - b[0].created_at);
+    groups.sort((a, b) => {
+        if (a[0].created_at < b[0].created_at) return -1;
+        else if (a[0].created_at > b[0].created_at) return +1;
+        else return 0;
+    });
 
     return groups;
 }

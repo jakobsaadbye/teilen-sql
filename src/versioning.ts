@@ -1,5 +1,5 @@
 import { applyChanges, Change, generateUniqueId, insertRows, SqliteDB, isLastWriter, sqlPlaceholdersNxM, pksEqual, pkEncodingOfRow, saveChanges } from "../index.ts";
-import { assert, deleteRows, flatten } from "./utils.ts";
+import { assert, deleteRows, flatten, intersect } from "./utils.ts";
 
 export type Document = {
     id: string
@@ -17,6 +17,14 @@ export type Commit = {
     author: string
     created_at: number
     applied_at: number
+}
+
+export type DocumentSnapshot = {
+    [tblName: string]: {
+        [pk: string]: {
+            [col: string]: any
+        }
+    }
 }
 
 type CellConflict = [our: Change, their: Change];
@@ -177,7 +185,7 @@ export const revert = async (db: SqliteDB) => {
 
 type CommitGraph = {
     head: CommitNode
-    roots: CommitNode[]
+    root: CommitNode
     nodes: CommitNode[]
 }
 
@@ -203,7 +211,7 @@ export const getCommitGraph = async (db: SqliteDB, documentId = "main") => {
 
     // Stitch the graph together by following the parent relations
     const nodes: CommitNode[] = [];
-    const roots: CommitNode[] = [];
+    const roots: CommitNode[] = []; // @NOTE: There might be multiple roots, if working on a shared 'main' document
 
     // Attach each commit to a node
     for (const commit of commits) {
@@ -251,9 +259,32 @@ export const getCommitGraph = async (db: SqliteDB, documentId = "main") => {
     assert(roots.length > 0);
     assert(headNode);
 
+    // If we have multiple roots, form a new root commit that is the parent of the multiple roots
+    let root = roots[0];
+    if (roots.length > 1) {
+        const trueRootCommit: Commit = {
+            id: "root",
+            document: head.document,
+            parent: null,
+            message: "An inserted root to have only 1 root",
+            author: "teilen",
+            created_at: 0,
+            applied_at: 0,
+        }
+
+        const trueRoot = newCommitNode(trueRootCommit, [], roots);
+
+        // Link the multiple roots to the true root
+        for (const root of roots) {
+            root.parents = [trueRoot];
+        }
+
+        root = trueRoot;
+    }
+
     const G: CommitGraph = {
         head: headNode,
-        roots,
+        root,
         nodes,
     };
 
@@ -262,15 +293,8 @@ export const getCommitGraph = async (db: SqliteDB, documentId = "main") => {
 
 export const printCommitGraph = (G: CommitGraph) => {
 
-    const root = G.roots[0];
-    let node = G.head;
-    let timelines: (CommitNode | null)[] = [node];
-
-    const generateBars = () => {
-        const bars = [];
-        for (let i = 0; i < timelines.length; i++) bars.push("| ");
-        return bars.join('');
-    }
+    const node = G.head;
+    const timelines: (CommitNode | null)[] = [node];
 
     const getNext = (): [CommitNode, number] => {
         // Pick the commit with the highest timestamp
@@ -441,9 +465,7 @@ const fastApplyChanges = async (db: SqliteDB, changes: Change[]) => {
 export const preparePushCommits = async (db: SqliteDB, documentId = "main") => {
     let doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
     if (!doc) {
-        // @Cleanup - This probably should be an error??
-        doc = { id: documentId, head: null } as Document;
-        await db.exec(`INSERT INTO "crr_documents" (id, head) VALUES (?, ?)`, [doc!.id, null]);
+        doc = await createDocument(db, documentId, null);
     }
 
     const lastPushedCommit = await db.first<Commit>(`SELECT * FROM "crr_commits" WHERE id = (SELECT last_pushed_commit FROM "crr_documents" WHERE id = ?)`, [doc.id]);
@@ -705,7 +727,7 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
             const collided = collides(theirChange, ourChanges);
             if (collided) {
                 const ourChange = collided;
-                
+
                 cellConflicts.push([ourChange, theirChange]);
 
                 const autoResolve = crrColumns[ourChange.tbl_name].find(col => col.col_id === ourChange.col_id && !col.manual_conflict) !== undefined;
@@ -801,7 +823,11 @@ const getRowConflictsFromCellConflicts = async (db: SqliteDB, cellConflicts: Cel
         const tblName = our.tbl_name;
         const pk = our.pk;
         if (cc[tblName]) {
-            cc[tblName][pk].push([our, their]);
+            if (cc[tblName][pk]) {
+                cc[tblName][pk].push([our, their]);
+            } else {
+                cc[tblName][pk] = [[our, their]];
+            }
         } else {
             cc[tblName] = { [pk]: [[our, their]] };
         }
@@ -869,21 +895,21 @@ export const resolveConflict = async (db: SqliteDB, table: string, pk: string, d
     // current merge commit that was stopped due to manual conflicts.
     // We prevent clients from pushing any commit until the conflicts are resolved and made part of 
     // the merge commit for this reason. Duplicating the change with a new timestamp ensures that other clients
-    // will automatically accept the chosen change as the merge indicates than the pushing clients have atleast seen
+    // will automatically accept the chosen change as the merge indicates that the pushing clients have atleast seen
     // the receiving clients change.
-    
+
     const conflictRow = await db.first<RowConflict<any>>(`SELECT * FROM "crr_conflicts" WHERE document = ? AND tbl_name = ? AND pk = ?`, [documentId, table, pk]);
     if (!conflictRow) {
         throw new Error("Conflict was not found");
     }
 
     const conflict = deserializeConflict<any>(conflictRow);
-    
+
     const merge = await getHead(db, documentId);
     if (!merge || !isMerge(merge)) {
         throw new Error("**BUG** Expected that the current HEAD is pointing at the current merge");
     }
-    
+
     // Generate duplicate cell changes with a new timestamp
     const winningRow = choice === "our" ? conflict.our : conflict.their;
     const winningChanges: Change[] = [];
@@ -909,7 +935,7 @@ export const resolveConflict = async (db: SqliteDB, table: string, pk: string, d
     await db.exec(`DELETE FROM "crr_conflicts" WHERE document = ? AND tbl_name = ? AND pk = ?`, [documentId, table, pk]);
 }
 
-const deserializeConflict = <T>(conflict: RowConflict<string>) : RowConflict<T> => {
+const deserializeConflict = <T>(conflict: RowConflict<string>): RowConflict<T> => {
     return {
         ...conflict,
         columns: JSON.parse((conflict.columns as unknown as string)),
@@ -927,10 +953,60 @@ export const getConflicts = async <T>(db: SqliteDB, table: string, documentId = 
     return result;
 }
 
+/** Gets parent commits up until and including the given commit following the authors commits on any merges/branches */
+const getAncestors = (G: CommitGraph, commit: Commit) => {
+
+    const pickOurChild = (children: CommitNode[]) => {
+        if (children.length === 1) return children[0];
+        return children.find(child => child.commit.author === commit.author);
+    }
+
+    // On branches (children > 1), we follow the children of the commit author
+    const immediateParents: CommitNode[] = [G.root];
+
+    let node = G.root;
+    while (node.children.length > 0) {
+        const children = node.children;
+
+        const child = pickOurChild(children);
+        if (!child) {
+            // This should ideally not happen, but lets not assert it to not break client applications
+            console.error(`**Corrupt**: Missing child in commit graph. Unable to follow commits to the head of the document`);
+            break;
+        }
+
+        immediateParents.push(child);
+        if (child.commit.id === commit.id) {
+            break;
+        } else {
+            node = child;
+        }
+    }
+
+    return immediateParents;
+}
+
+const getCommonAncestor = (G: CommitGraph, a: Commit, b: Commit) => {
+
+    const aAncestors = getAncestors(G, a);
+    const bAncestors = getAncestors(G, b);
+
+    // Do an intersection to find all common ancestors
+    const commonAncestors: CommitNode[] = intersect(aAncestors, bAncestors);
+    assert(commonAncestors.length > 0);
+
+    // The lowest common ancestor (common ancestor) will be the last one
+    return commonAncestors[commonAncestors.length - 1];
+}
+
+
 /** Gets a snapshot of a document at a certain commit */
-export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit) => {
-    // Get all changes up to (including) this commit
-    const pastCommits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE document = ? AND created_at <= ?`, [commit.document, commit.created_at]);
+export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit): Promise<DocumentSnapshot> => {
+    const G = await getCommitGraph(db, commit.document);
+    if (!G) return {};
+
+    const pastCommitsNodes = getAncestors(G, commit);
+    const pastCommits = pastCommitsNodes.map(node => node.commit);
     const pastChanges = flatten(await getChangesForCommits(db, pastCommits));
 
     const document: { [tblName: string]: { [pk: string]: { [col: string]: any } } } = {};
@@ -959,6 +1035,94 @@ export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit) => {
     return document;
 }
 
+/** Gets all the rows for a particular table of document snapshot */
+export const getSnapshotRows = <T>(db: SqliteDB, snapshot: DocumentSnapshot, tableName: string) => {
+    const table = snapshot[tableName];
+    if (table) {
+        const rows = Object.values(table) as T[];
+        return rows;
+    }
+    return [];
+}
+
+type RowChange = {
+    pk: string
+    columns: string[]   // inserted = Empty, updated = The updated columns, deleted = Empty  
+    row: any
+}
+
+type TableDiff = {
+    tblName: string
+    inserted: RowChange[]
+    updated: RowChange[]
+    deleted: RowChange[]
+}
+
+// @WIP @Cleanup - Needs fixing or be removed???
+export const getDiff = async (db: SqliteDB, a: Commit, b: Commit) => {
+    // const G = await getCommitGraph(db, a.document);
+    // if (!G) return;
+
+    // const aAncestors = getAncestors(G, a);
+    // const bAncestors = getAncestors(G, b);
+    // const commonAncestor = getCommonAncestor(G, a, b);
+
+    // // Get all the changes made between the common ancestor and the two commits a and b
+    // const getChangesBetween = async (ancestors: CommitNode[], commonAncestor: CommitNode) => {
+    //     const commitsBetween: Commit[] = [];
+    //     for (const ancestor of aAncestors) {
+    //         if (ancestor === commonAncestor) break;
+    //         commitsBetween.push(ancestor.commit);
+    //     }
+    //     const changesBetween = await getChangesForCommits(db, commitsBetween);
+    //     return changesBetween;
+    // }
+
+    // const aChanges = flatten(await getChangesBetween(aAncestors, commonAncestor));
+    // const bChanges = flatten(await getChangesBetween(bAncestors, commonAncestor));
+
+    const diffs: { [tblName: string]: TableDiff } = {};
+
+    const snapshotA = await getDocumentSnapshot(db, a);
+    const snapshotB = await getDocumentSnapshot(db, b);
+
+    // Perform a document diff
+    for (const [table, rowsA] of Object.entries(snapshotA)) {
+        const rowsB = snapshotB[table];
+
+        for (const [pk, rowB] of Object.entries(rowsB)) {
+
+            const rowA = rowsA[pk];
+
+            // Inserted in B?
+            if (!rowA) {
+                if (diffs[table]) {
+                    diffs[table].inserted = [{ pk, columns: [], row: rowB }];
+                } else {
+                    diffs[table] = { tblName: table, inserted: [{ pk, columns: [], row: rowB }], updated: [], deleted: [] };
+                }
+                continue;
+            }
+
+            // Modified in B?
+            for (const [col, valueB] of Object.entries(rowB)) {
+
+                const valueA = rowsA[col];
+
+                const columnsModified: string[] = [];
+                if (valueA !== valueB) {
+                    columnsModified.push(col);
+                }
+            }
+
+        }
+    }
+
+
+
+}
+
+
 /** Gets the non-pushed commit count for a given document */
 export const getPushCount = async (db: SqliteDB, documentId = "main") => {
     const doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
@@ -967,11 +1131,15 @@ export const getPushCount = async (db: SqliteDB, documentId = "main") => {
         return 0;
     }
 
-    const unpushedCommits = await db.select<Commit[]>(`
-        SELECT * FROM "crr_commits" WHERE document = ? AND author = ? AND created_at > (SELECT created_at FROM "crr_commits" WHERE document = ? AND id = ?)
-    `, [doc.id, db.siteId, doc.id, doc.last_pushed_commit ?? 0]);
-    
-    return unpushedCommits.length;
+    if (!doc.last_pushed_commit) {
+        const unpushedCommits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE document = ? AND author = ?`, [doc.id, db.siteId]);
+        return unpushedCommits.length;
+    } else {
+        const unpushedCommits = await db.select<Commit[]>(`
+            SELECT * FROM "crr_commits" WHERE document = ? AND author = ? AND created_at > (SELECT created_at FROM "crr_commits" WHERE document = ? AND id = ?)
+        `, [doc.id, db.siteId, doc.id, doc.last_pushed_commit ?? 0]);
+        return unpushedCommits.length;
+    }
 }
 
 const saveRowConflicts = async (db: SqliteDB, conflicts: RowConflict<any>[]) => {

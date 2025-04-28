@@ -8,7 +8,7 @@ export const insertCrrTablesStmt = `
         pk text not null,
         value any,
         site_id text not null,
-        created_at bigint not null,
+        created_at text not null,
         applied_at bigint not null,
         version text references crr_commits(id),
         document text references crr_documents(id),
@@ -26,6 +26,7 @@ export const insertCrrTablesStmt = `
         fk_on_delete text,
         parent_col_id text,
         manual_conflict boolean,
+        replicate boolean,
 
         primary key(tbl_name, col_id)
     );
@@ -39,7 +40,7 @@ export const insertCrrTablesStmt = `
 
     CREATE TABLE IF NOT EXISTS crr_temp(
         lotr int primary key default 1,
-        time bigint default 0,
+        clock string default '0-0',
         time_travelling boolean default 0,
         document text references crr_documents(id)
     );

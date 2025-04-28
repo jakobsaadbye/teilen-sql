@@ -142,7 +142,7 @@ export const Inspector = ({ children }) => {
     const onSqlEditorResults = (sql: string, rows: any[]): void => {
         if (rows.length === 0) return;
         const columns = Object.keys(rows[0]);
-        setSqlEditorResults({sql, columns, rows });
+        setSqlEditorResults({ sql, columns, rows });
         setMode('query');
     }
 
@@ -236,7 +236,7 @@ export const Inspector = ({ children }) => {
     const handleRightClickedDataTable = (e: PointerEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        
+
         let sql = currentQueryNoRowid();
         if (sqlEditorResults && mode === "query") {
             sql = sqlEditorResults.sql;
@@ -244,7 +244,7 @@ export const Inspector = ({ children }) => {
 
         setDataRightClicked({
             sql: sql,
-            mouseX: Math.floor(e.clientX), 
+            mouseX: Math.floor(e.clientX),
             mouseY: Math.floor(e.clientY)
         });
     }
@@ -325,7 +325,7 @@ export const Inspector = ({ children }) => {
     return (
         <>
             {children}
-            
+
             <TableDropdown tables={tables} event={tableRightClicked} />
             <DataDropdown event={dataRightClicked} />
 
@@ -359,7 +359,7 @@ export const Inspector = ({ children }) => {
                     </div>
                 </header>
                 <div className="relative flex h-full w-full">
-                    <section className="min-w-42 px-2 pb-12 bg-gray-300 overflow-y-auto">
+                    <section className="min-w-48 px-2 pb-12 bg-gray-300 overflow-y-auto">
                         <h2 className="text-lg">Tables</h2>
                         <ul className="ml-1 mr-2 mt-1">
                             {tables.map((table, i) => {
@@ -368,10 +368,10 @@ export const Inspector = ({ children }) => {
                                         key={i}
                                         onClick={(e) => handleClickTable(e, i)}
                                         onContextMenu={(e) => handleClickTable(e, i)}
-                                        className={`flex gap-x-1 pr-2 hover:bg-gray-200 ${isSelected('table', i) && 'bg-gray-100'}`}
+                                        className={twMerge(`flex gap-x-1 pr-2 hover:bg-gray-200`, isSelected('table', i) && 'bg-gray-100')}
                                     >
                                         <TableIcon className="min-w-6 min-h-6 fill-blue-400" />
-                                        <p className="select-none">{table.name}</p>
+                                        <p className="select-none truncate">{table.name}</p>
                                     </div>
                                 )
                             })}
@@ -402,7 +402,7 @@ export const Inspector = ({ children }) => {
                                     ))}
                                 </tr>
                             </thead>
-                            <tbody className="">
+                            <tbody className="select-none">
                                 {mode === 'data' && rows && rows.map((row, rowIndex) => (
                                     <tr
                                         key={rowIndex}
@@ -414,7 +414,7 @@ export const Inspector = ({ children }) => {
                                                 {isEditingColumn(rowIndex, colIndex) && (
                                                     <input
                                                         id="tw_input_col_value"
-                                                        className="w-full"
+                                                        className={twMerge("w-full", v === null && "text-gray-400")}
                                                         type="text"
                                                         name="col_value"
                                                         value={editingColumnValue}
@@ -424,9 +424,10 @@ export const Inspector = ({ children }) => {
                                                     />
                                                 )}
                                                 {!isEditingColumn(rowIndex, colIndex) && (
-                                                    <p>
-                                                        {v}
-                                                    </p>
+                                                    <>
+                                                        {v === null && (<p className="text-gray-400">NULL</p>)}
+                                                        {v !== null && (<p>{v}</p>)}
+                                                    </>
                                                 )}
                                             </td>
                                         ))}

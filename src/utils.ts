@@ -192,6 +192,21 @@ export const unique = (arr: any[]) => {
     return [...new Set(arr)];
 }
 
+export const intersect = <T>(A: T[], B: T[], comparisonFn: (a: T, b: T) => boolean = (a, b) => a === b, pick: "a" | "b" = "b") => {
+    const result: T[] = [];
+    for (const a of A) {
+        const x = B.find((b) => comparisonFn(a, b));
+        if (x) {
+            if (pick === "a") {
+                result.push(a);
+            } else {
+                result.push(x);
+            }
+        }
+    }
+    return result;
+}
+
 export const flatten = <T>(aoa: T[][]): T[] => {
     return aoa.reduce((result, array) => {result.push(...array); return result}, [] as T[]);
 }
