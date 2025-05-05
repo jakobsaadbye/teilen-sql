@@ -52,7 +52,7 @@ Deno.test("Discard changes two documents", async () => {
     assertEquals(docAChanges.length, 0);
 });
 
-Deno.test.ignore("Discard changes big", async () => {
+Deno.test("Discard changes big", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,
@@ -90,7 +90,7 @@ Deno.test.ignore("Discard changes big", async () => {
     }
 
     const saveTodos = async (db: SqliteDB, todos: Todo[]) => {
-        // We need to save the todos in batches to not exceed SQLITE_MAX_VARIABLE_NUMBER of 999
+        // We need to save the todos in batches to not exceed SQLITE_MAX_VARIABLE_NUMBER of 999. sigh ....
         const rounds = Math.floor(todos.length / 1_000);
         for (let i = 0; i < rounds; i++) {
             let end = i * 1_000 + 1000;

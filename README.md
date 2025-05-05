@@ -19,23 +19,19 @@ This library is not really made for production use yet as its still very experim
 
 🔀 Distributed fractional indicies for ordering of rows
 
-⌛️ User-defined timings on tables for when deletes takes precedence over new changes
-
 🛜 Network agnostic. Changes can be sent over the network to be merged or they can stay local till connectivity is back
 
 
 ## Tables as CRR's
 
-Tables can be updated to be crr's or replicated tables. The second parameter ```deleteWinsAfter```, specifies when deletions should take precedence over 'new' updates. If no updates have been made after ```deleteWinsAfter``` amount of time on a row or any row that references it, then it gets removed.
-
-The checking of updates is done transatively, that means if you have a relationship like ```boards <-- columns <-- todos```, deleting the board only happens if no new colums or todo changes have been made since the boards ```deleteWinsAfter``` timeframe.
-```js
+Tables can be updated to be crr's or replicated tables
+```ts
 // db setup ...
 
-// Make the tables into crr's with deletions taking precedence when no updates have been made after 10s.
-await db.upgradeTableToCrr("boards", "10s");
-await db.upgradeTableToCrr("todos", "10s");
-await db.upgradeTableToCrr("columns", "10s");
+// Make the tables into crr's
+await db.upgradeTableToCrr("boards");
+await db.upgradeTableToCrr("todos");
+await db.upgradeTableToCrr("lists");
 
 await db.finalizeUpgrades();
 ```

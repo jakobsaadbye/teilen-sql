@@ -1,8 +1,8 @@
-import { applyChanges, Change, generateUniqueId, insertRows, SqliteDB, isLastWriter, sqlPlaceholdersNxM, pksEqual, pkEncodingOfRow, saveChanges, pkEqual } from "../index.ts";
-import { CommitGraph, CommitNode, getAncestors, getCommitGraph } from "./graph.ts";
+import { applyChanges, Change, generateUniqueId, insertRows, SqliteDB, isLastWriter, sqlPlaceholdersNxM, saveChanges, pkEqual } from "../index.ts";
+import { getCommitGraph } from "./graph.ts";
 import { createTimestamp } from "./hlc.ts";
-import { DocumentSnapshot } from "./snapshot.ts";
-import { assert, deleteRows, flatten, intersect, intersectCross } from "./utils.ts";
+import { applySnapshot, DocumentSnapshot } from "./snapshot.ts";
+import { assert, deleteRows, flatten } from "./utils.ts";
 
 export type Document = {
     id: string
@@ -181,30 +181,30 @@ export const setTimetravelling = async (db: SqliteDB, value: boolean) => {
     await db.exec(`UPDATE "crr_temp" SET time_travelling = ?`, [value ? 1 : 0]);
 }
 
-export const revert = async (db: SqliteDB) => {
-    // @TODO
-}
-
 export const discardChanges = async (db: SqliteDB, documentId: string) => {
-    await db.exec(`UPDATE "crr_temp" SET time_travelling = 1`, []);
-    await dropDocument(db, documentId);
+
+    // Reapply all changes from history except the uncomitted changes
+    // @Speed - We could probably be smarter about this. Something along the lines of reapply the inverse of the changes to discard.
+    // One challenge with reverting state from these snapshots, is that we potentially have to look back to the very first commit
+    // when figuring out what the previous snapshopt looked like
+    const changes = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE document = ? AND version != '0' ORDER BY created_at ASC`, [documentId]);
+
+    await setTimetravelling(db, true);
+    const root = new DocumentSnapshot(documentId);
+    const lastSnapshot = root.applyChanges(changes);
+    await applySnapshot(db, lastSnapshot);
+    await setTimetravelling(db, false);
 
     // Remove uncommitted changes
-    await db.exec(`DELETE FROM "crr_changes" WHERE version = '0' AND document = ?`, [documentId]);
-
-    // Reapply all changes from history
-    // @Speed - This probably needs to be reconsidered ...
-    //          One way we could speed this up would be to group each set of changes
-    //          into their respective tables, turning foreign-keys off, then doing bulk inserts
-    //          of rows
-    const changes = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE document = ? ORDER BY created_at ASC`, [documentId]);
-
-    await fastApplyChanges(db, changes);
-    await db.exec(`UPDATE "crr_temp" SET time_travelling = 0`, []);
+    await db.execOrThrow(`DELETE FROM "crr_changes" WHERE version = '0' AND document = ?`, [documentId]);
 }
 
+
+
 const fastApplyChanges = async (db: SqliteDB, changes: Change[]) => {
-    const changesPerTable = Object.groupBy(changes, (c => c.tbl_name));
+    const sorted = changes.toSorted((a, b) => a < b ? -1 : +1);
+
+    const changesPerTable = Object.groupBy(sorted, (c => c.tbl_name));
     for (const [table, tableChanges] of Object.entries(changesPerTable)) {
         const changesPerRow = Object.groupBy(tableChanges!, (c => c.pk));
 
@@ -873,7 +873,7 @@ const saveCommits = async (db: SqliteDB, commits: Commit[]) => {
     return now;
 }
 
-const dropDocument = async (db: SqliteDB, documentId: string) => {
+export const dropDocument = async (db: SqliteDB, documentId: string) => {
     const docRows = await db.select<{ tbl_name: string, pk: string }[]>(`SELECT tbl_name, pk FROM "crr_changes" WHERE document = ? GROUP BY pk`, [documentId]);
 
     const rowsPerTable = Object.groupBy(docRows, (row) => row.tbl_name);

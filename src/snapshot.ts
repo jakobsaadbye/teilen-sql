@@ -1,8 +1,8 @@
 import { SqliteDB } from "./sqlitedb.ts";
 import { Change, isLastWriter } from "./change.ts";
 import { getCommitGraph } from "./graph.ts";
-import { flatten } from "./utils.ts";
-import { Commit, getChangesForCommits } from "./versioning.ts";
+import { flatten, insertRows } from "./utils.ts";
+import { Commit, dropDocument, getChangesForCommits } from "./versioning.ts";
 
 type SnapshotData = {
     [tblName: string]: {
@@ -15,25 +15,40 @@ type SnapshotData = {
 /** Gets a snapshot of a document at a certain commit */
 export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit): Promise<DocumentSnapshot> => {
     const G = await getCommitGraph(db, commit.document);
-    if (!G) return new DocumentSnapshot();
+    if (!G) return new DocumentSnapshot(commit.document);
 
     const pastCommits = G.ancestors(commit);
     const pastChanges = flatten(await getChangesForCommits(db, pastCommits));
 
-    const root = new DocumentSnapshot();
+    const root = new DocumentSnapshot(commit.document);
     const snapshot = root.applyChanges(pastChanges);
     return snapshot;
 }
 
+/** Does a naive apply of the entire snapshot against the database, dropping the previous snapshot */
+export const applySnapshot = async (db: SqliteDB, snapshot: DocumentSnapshot) => {
+    await dropDocument(db, snapshot.documentId);
+
+    const tables = snapshot.tables();
+    for (const table of tables) {
+        const rows = snapshot.getRows<any[]>(table);
+        await insertRows(db, table, rows);
+    }
+}
+
 
 export class DocumentSnapshot {
+    documentId: string;
     data: SnapshotData = {};
 
-    constructor() {
+    constructor(documentId: string) {
         this.data = {};
+        this.documentId = documentId;
     }
 
     applyChanges(changes: Change[]) {
+        if (changes.length === 0) return this;
+
         const result = this.copy();
 
         const sortedChanges = changes.toSorted();
@@ -64,11 +79,11 @@ export class DocumentSnapshot {
         return result;
     }
 
-    getRow<T>(table: string, pk: string) : T | undefined {
+    getRow<T>(table: string, pk: string): T | undefined {
         if (this.data[table]) {
             if (this.data[table][pk]) {
                 const row = {} as T;
-                
+
                 // A row with an active tombstone returns undefined
                 let deleted = false;
                 for (const [col, change] of Object.entries(this.data[table][pk])) {
@@ -103,6 +118,10 @@ export class DocumentSnapshot {
         return rows;
     }
 
+    tables(): string[] {
+        return Object.keys(this.data)
+    }
+
     copy(): DocumentSnapshot {
         const dataCopy: SnapshotData = {};
         for (const [table, rows] of Object.entries(this.data)) {
@@ -115,7 +134,7 @@ export class DocumentSnapshot {
             }
         }
 
-        const copy = new DocumentSnapshot();
+        const copy = new DocumentSnapshot(this.documentId);
         copy.data = dataCopy;
         return copy;
     }

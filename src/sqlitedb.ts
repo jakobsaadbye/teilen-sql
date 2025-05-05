@@ -357,8 +357,6 @@ export const assignSiteId = async (db: SqliteDB) => {
 }
 
 export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: any[], documentId = "main") => {
-    // @TODO: This will become a place where we would actually create a new hybrid logical clock.
-
     try {
         const doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
         if (!doc) {
