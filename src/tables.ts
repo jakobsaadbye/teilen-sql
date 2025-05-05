@@ -40,7 +40,7 @@ export const insertCrrTablesStmt = `
 
     CREATE TABLE IF NOT EXISTS crr_temp(
         lotr int primary key default 1,
-        clock string default '0-0',
+        clock text default '',
         time_travelling boolean default 0,
         document text references crr_documents(id)
     );
@@ -70,8 +70,6 @@ export const insertCrrTablesStmt = `
         tbl_name text not null,
         pk text not null,
         columns string,
-        base string,
-        our string,
         their string,
 
         primary key(document, tbl_name, pk)

@@ -2,7 +2,8 @@ import { Database } from "jsr:@db/sqlite@0.12";
 import { Change, CrrColumn } from "./change.ts";
 import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper, defaultUpgradeOptions } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
-import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, DocumentSnapshot, getConflicts, getDocumentSnapshot, getPushCount, getSnapshotRows, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
+import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, getConflicts, getHead, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
+import { getDocumentSnapshot } from "./snapshot.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
 
 /**
@@ -72,7 +73,7 @@ export class SqliteDBWrapper {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents", "crr_conflicts"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -159,14 +160,14 @@ export class SqliteDBWrapper {
         return await getDocumentSnapshot(this, commit);
     }
 
-    /** Gets all the rows for a particular table of document snapshot */
-    getSnapshotRows<T>(snapshot: DocumentSnapshot, tableName: string) {
-        return getSnapshotRows<T>(this, snapshot, tableName);
-    }
-
     /** Gets the non-pushed commit count for a given document */
     async getPushCount(documentId = "main") {
         return await getPushCount(this, documentId);
+    }
+
+    /** Returns the HEAD commit of the document */
+    async getHead(documentId = "main") {
+        return await getHead(this, documentId);
     }
 
     //////////////////////////

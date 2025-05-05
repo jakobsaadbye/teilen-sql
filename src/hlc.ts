@@ -3,6 +3,8 @@
  * https://cse.buffalo.edu/tech-reports/2014-04.pdf
  */
 
+import { SqliteDB, TemporaryData } from "./sqlitedb.ts";
+
 export type Hlc = {
     pt: number  // Physical-time (Wall clock reading)
     lt: number  // Logical-time (Lamport timestamp)
@@ -71,4 +73,29 @@ export const decodeHlc = (encoded: string): Hlc => {
     const lt = Number.parseInt(lt36, 36);
 
     return { pt, lt };
+}
+
+/** Creates a new hybrid-logical-clock timestamp and inserts it into the database */
+export const createTimestamp = async (db: SqliteDB): Promise<string> => {
+    let clock: string;
+    const temp = await db.first<TemporaryData>(`SELECT * FROM "crr_temp"`, []);
+    if (!temp) {
+        const clockHlc = newHlc();
+        clock = encodeHlc(clockHlc);
+    } else {
+        const currentClock = temp.clock;
+        if (!currentClock) {
+           const clockHlc = newHlc();
+           clock = encodeHlc(clockHlc);
+        } else {
+            let clockHlc = decodeHlc(currentClock);
+            clockHlc = sendHlc(clockHlc);
+            clock = encodeHlc(clockHlc);
+        }
+    }
+    
+    const err = await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock) VALUES (?)`, [clock]);
+    if (err) console.log(err);
+
+    return clock;
 }

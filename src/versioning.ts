@@ -1,5 +1,8 @@
-import { applyChanges, Change, generateUniqueId, insertRows, SqliteDB, isLastWriter, sqlPlaceholdersNxM, pksEqual, pkEncodingOfRow, saveChanges } from "../index.ts";
-import { assert, deleteRows, flatten, intersect } from "./utils.ts";
+import { applyChanges, Change, generateUniqueId, insertRows, SqliteDB, isLastWriter, sqlPlaceholdersNxM, pksEqual, pkEncodingOfRow, saveChanges, pkEqual } from "../index.ts";
+import { CommitGraph, CommitNode, getAncestors, getCommitGraph } from "./graph.ts";
+import { createTimestamp } from "./hlc.ts";
+import { DocumentSnapshot } from "./snapshot.ts";
+import { assert, deleteRows, flatten, intersect, intersectCross } from "./utils.ts";
 
 export type Document = {
     id: string
@@ -19,27 +22,17 @@ export type Commit = {
     applied_at: number
 }
 
-export type DocumentSnapshot = {
-    [tblName: string]: {
-        [pk: string]: {
-            [col: string]: any
-        }
-    }
-}
-
 type CellConflict = [our: Change, their: Change];
 
 export type RowConflict<T> = {
     document: string    // Document that the conflict happened in
     tbl_name: string    // The conflicting table
     pk: string          // Encoded primary-key of the row
-    columns: string[]   // Columns that are conflicting
-    base: T             // The row as it was before diverging
-    our: T              // Your version of the row
+    columns: string[]   // Columns that were conflicting
     their: T            // Their version of the row
 }
 
-export type ConflictChoice = "our" | "their";
+export type ConflictChoice = "all-our" | "all-their" | [col: string, "our" | "their"][]
 
 export type PushRequest = {
     siteId: string
@@ -64,10 +57,14 @@ export type PushResponse = {
 
 export type PullResult = {
     documentId: string
-    merge?: Commit              // If the pull produced a merge, this field will be set
-    conflicts: RowConflict<any>[]
-    manualConflicts: RowConflict<any>[]
-    appliedChanges: Change[]    // The changes that got applied to the database during the pull
+    merge?: Commit                  // If the pull produced a merge, the resulting merge commit will be set
+    conflicts: RowConflict<any>[]   // Conflicts that resulted from a merge on manual conflict columns
+    appliedChanges: Change[]        // The changes that got applied to the database during the pull
+    commonAncestor?: Commit,        // The commit from which both branches diverged
+    concurrentChanges: {            // The divergent changes from your and their branch. Useful if you want to construct a snapshot of how their document looked like before the pull
+        our: Change[]
+        their: Change[]
+    }
 }
 
 const createDocument = async (db: SqliteDB, id: string, head: string | null) => {
@@ -123,47 +120,51 @@ export const commit = async (db: SqliteDB, message: string, documentId: string):
     return commit;
 }
 
-export const checkout = async (db: SqliteDB, commitId: string) => {
-    const commit = await db.first<Commit>(`SELECT * FROM "crr_commits" WHERE id = ?`, [commitId]);
-    if (!commit) {
-        console.error(`Trying to checkout non-existing commit '${commitId}'`);
+export const checkout = async (db: SqliteDB, targetID: string) => {
+    const target = await db.first<Commit>(`SELECT * FROM "crr_commits" WHERE id = ?`, [targetID]);
+    if (!target) {
+        console.error(`Trying to checkout non-existing commit '${targetID}'`);
         return;
     }
 
-    const head = await db.first<Commit>(`
-        SELECT * FROM "crr_commits" 
-        WHERE id = (SELECT head FROM "crr_documents" WHERE id = ?)
-    `, [commit.document]);
+    const head = await getHead(db, target.document);
     if (!head) {
-        console.error(`No HEAD was found for document '${commit.document}'`);
+        console.error(`No HEAD was found for document '${target.document}'`);
         return;
     }
 
-    if (commit.id === head.id) {
+    if (target.id === head.id) {
         console.log(`Ignoring checkout of HEAD`);
         return;
     }
 
-    await db.exec(`UPDATE "crr_temp" SET time_travelling = 1`, []);
-    if (commit.created_at < head.created_at) {
-        await dropDocument(db, commit.document);
-        const backwardCommits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE created_at <= ? AND document = ?`, [commit.created_at, commit.document]);
-        for (const c of backwardCommits) {
-            const changes = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = ?`, [c.id]);
-            await fastApplyChanges(db, changes);
-        }
+    await setTimetravelling(db, true);
+
+    const G = await getCommitGraph(db, target.document);
+    if (!G) return;
+
+    if (G.isAncestor(target, head)) {
+        await dropDocument(db, target.document);
+        const ancestorsOfTarget = G.ancestors(target);
+        const changes = flatten(await getChangesForCommits(db, ancestorsOfTarget));
+        await fastApplyChanges(db, changes);
     } else {
-        // The HEAD must currenly be detached. Here we can simply apply the changes in-between ontop
-        const forwardCommits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE created_at > ? AND created_at <= ? AND document = ?`, [head.created_at, commit.created_at, commit.document]);
+        // The HEAD must currenly be detached. Instead of rebuilding the state from scratch, start from current HEAD 
+        // and apply the commits in-between on-top
+        const ancestorsOfTarget = G.ancestors(target);
+        const ancestorsOfHead = G.ancestors(head);
 
-        const changes: Change[] = [];
-        for (const c of forwardCommits) {
-            const cgs = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = ?`, [c.id]);
-            changes.push(...cgs);
-        }
+        // Apply the ancestors of the target commit minus those already applied from the head and ...down?
+        const ancestorsDiff = ancestorsOfTarget.filter(a => {
+            const alreadyApplied = ancestorsOfHead.find(b => a.id === b.id) !== undefined;
+            if (alreadyApplied) return false;
+            else return true;
+        });
 
-        const lastCommit = await db.first<Commit>(`SELECT *, MAX(created_at) FROM "crr_commits" `, []);
-        if (commit.id === lastCommit!.id) {
+        const changes = flatten(await getChangesForCommits(db, ancestorsDiff));
+
+        const tip = G.tip();
+        if (tip && target.id === tip.id) {
             // Apply "stashed" changes ontop. We are now no longer in detached mode!
             const cgs = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = '0'`, []);
             changes.push(...cgs);
@@ -172,233 +173,16 @@ export const checkout = async (db: SqliteDB, commitId: string) => {
         await fastApplyChanges(db, changes);
     }
 
+    await db.exec(`UPDATE "crr_documents" SET head = ? WHERE id = ?`, [target.id, target.document]);
+    await setTimetravelling(db, false);
+}
 
-    await db.exec(`UPDATE "crr_documents" SET head = ? WHERE id = ?`, [commit.id, commit.document]);
-    await db.exec(`UPDATE "crr_temp" SET time_travelling = 0`, []);
+export const setTimetravelling = async (db: SqliteDB, value: boolean) => {
+    await db.exec(`UPDATE "crr_temp" SET time_travelling = ?`, [value ? 1 : 0]);
 }
 
 export const revert = async (db: SqliteDB) => {
     // @TODO
-}
-
-
-
-type CommitGraph = {
-    head: CommitNode
-    root: CommitNode
-    nodes: CommitNode[]
-}
-
-type CommitNode = {
-    commit: Commit
-    parents: CommitNode[]
-    children: CommitNode[]
-}
-
-const newCommitNode = (commit: Commit, parents: CommitNode[], children: CommitNode[]): CommitNode => {
-    return {
-        commit,
-        parents,
-        children,
-    }
-}
-
-export const getCommitGraph = async (db: SqliteDB, documentId = "main") => {
-    const head = await getHead(db, documentId);
-    if (!head) return;
-
-    const commits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE document = ? ORDER BY created_at`, [documentId]);
-
-    // Stitch the graph together by following the parent relations
-    const nodes: CommitNode[] = [];
-    const roots: CommitNode[] = []; // @NOTE: There might be multiple roots, if working on a shared 'main' document
-
-    // Attach each commit to a node
-    for (const commit of commits) {
-        const node = newCommitNode(commit, [], []);
-        nodes.push(node);
-    }
-
-    let headNode;
-    for (const node of nodes) {
-        const commit = node.commit;
-
-        if (commit.id === head.id) {
-            headNode = node;
-        }
-
-        const parentId = commit.parent;
-        if (!parentId) {
-            node.parents = [];
-            roots.push(node);
-            continue;
-        }
-
-        if (isMerge(commit)) {
-            // Commit will have two parents
-            assert(commit.parent);
-            const [parentAId, parentBId] = commit.parent.split("|");
-            assert(parentAId && parentBId);
-
-            const parentA = nodes.find(node => node.commit.id === parentAId);
-            const parentB = nodes.find(node => node.commit.id === parentBId);
-            assert(parentA && parentB);
-
-            parentA.children.push(node);
-            parentB.children.push(node);
-            node.parents = [parentA, parentB];
-        } else {
-            const parent = nodes.find(node => node.commit.id === parentId);
-            assert(parent);
-
-            parent.children.push(node);
-            node.parents = [parent];
-        }
-    }
-
-    assert(roots.length > 0);
-    assert(headNode);
-
-    // If we have multiple roots, form a new root commit that is the parent of the multiple roots
-    let root = roots[0];
-    if (roots.length > 1) {
-        const trueRootCommit: Commit = {
-            id: "root",
-            document: head.document,
-            parent: null,
-            message: "An inserted root to have only 1 root",
-            author: "teilen",
-            created_at: 0,
-            applied_at: 0,
-        }
-
-        const trueRoot = newCommitNode(trueRootCommit, [], roots);
-
-        // Link the multiple roots to the true root
-        for (const root of roots) {
-            root.parents = [trueRoot];
-        }
-
-        root = trueRoot;
-    }
-
-    const G: CommitGraph = {
-        head: headNode,
-        root,
-        nodes,
-    };
-
-    return G;
-}
-
-export const printCommitGraph = (G: CommitGraph) => {
-
-    const node = G.head;
-    const timelines: (CommitNode | null)[] = [node];
-
-    const getNext = (): [CommitNode, number] => {
-        // Pick the commit with the highest timestamp
-        let maxCreatedAt = -Infinity, maxNode = null, maxIndex = -1;
-        for (let i = 0; i < timelines.length; i++) {
-            const node = timelines[i];
-            if (node && node.commit.created_at > maxCreatedAt) {
-                maxNode = node;
-                maxIndex = i;
-                maxCreatedAt = node.commit.created_at;
-            }
-        }
-        assert(maxNode && maxIndex !== -1);
-        return [maxNode, maxIndex];
-    }
-
-    const printCommitLine = (node: CommitNode, branch: number) => {
-        let symbols = "";
-        for (let i = 0; i < timelines.length; i++) {
-            if (i === branch) {
-                symbols += "o  ";
-            } else {
-                symbols += "|  ";
-            }
-        }
-
-        const line = `${symbols} ${node.commit.message}`;
-        console.log(line);
-    }
-
-    const printJoin = (into: number, from: number) => {
-        let symbols = "";
-        for (let i = 0; i < timelines.length + 1; i++) {
-            if (i === from) {
-                if (from > into) {
-                    symbols += "/  ";
-                } else {
-                    symbols += "\\  ";
-                }
-            } else {
-                symbols += "| ";
-            }
-        }
-        const line = `${symbols}`;
-        console.log(line);
-    }
-
-    const printIntermediateLine = () => {
-        let symbols = "";
-        for (let i = 0; i < timelines.length; i++) {
-            symbols += "|  ";
-        }
-        const line = `${symbols}`;
-        console.log(line);
-    }
-
-    let joinBranch: number | null = null;
-
-    while (true) {
-        const [node, branch] = getNext();
-
-        if (node.parents.length === 2) {
-            // Merge
-            printCommitLine(node, branch);
-            console.log(`| \\`);
-
-            // Split the branches
-            timelines.push(node.parents[1]);
-            timelines[branch] = node.parents[0];
-
-        } else if (node.parents.length === 1) {
-            // Normal
-            printCommitLine(node, branch);
-            printIntermediateLine();
-
-            const parent = node.parents[0];
-            timelines[branch] = parent;
-
-            if (parent.children.length === 2) {
-                // We've hit a common ancestor. Proceed on the other branch or join the branches;
-                timelines[branch] = null;
-
-                // Join the branches?
-                let joinTimelines = true;
-                for (const node of timelines) {
-                    if (node) joinTimelines = false;
-                }
-                if (joinTimelines) {
-                    joinBranch = timelines.length - 1;
-                    timelines.pop();
-                    timelines[branch] = parent;
-                }
-            }
-
-
-        } else {
-            // Root
-            if (joinBranch) {
-                printJoin(branch, joinBranch);
-            }
-            printCommitLine(node, branch);
-            break;
-        }
-    }
 }
 
 export const discardChanges = async (db: SqliteDB, documentId: string) => {
@@ -444,7 +228,7 @@ const fastApplyChanges = async (db: SqliteDB, changes: Change[]) => {
 
             // Insert updated values
             for (const change of rowChanges!) {
-                if (change.type === "delete" && change.value === 1) {
+                if (change.type === "delete" && change.value % 2 === 1) {
                     continue rowCreation;
                 }
                 row[change.col_id] = change.value; // Recreation of the row assummes that the changes are in order such that an update takes precedence over a past insert
@@ -605,7 +389,7 @@ export const receivePullCommits = async (db: SqliteDB, pull: PullRequest): Promi
     }
 }
 
-const getChangesForCommits = async (db: SqliteDB, commits: Commit[]) => {
+export const getChangesForCommits = async (db: SqliteDB, commits: Commit[]) => {
     const changes: Change[][] = [];
     for (const commit of commits) {
         const cgs = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE version = ?`, [commit.id]);
@@ -615,11 +399,11 @@ const getChangesForCommits = async (db: SqliteDB, commits: Commit[]) => {
     return changes;
 }
 
-const getHead = async (db: SqliteDB, documentId = "main") => {
+export const getHead = async (db: SqliteDB, documentId = "main") => {
     return db.first<Commit>(`SELECT * FROM "crr_commits" WHERE id = (SELECT head FROM "crr_documents" WHERE id = ?)`, [documentId]);
 }
 
-const isMerge = (commit: Commit) => {
+export const isMerge = (commit: Commit) => {
     return commit.parent !== null && commit.parent.split("|").length === 2;
 }
 
@@ -639,14 +423,14 @@ export const applyPull = async (db: SqliteDB, pull: PullResponse): Promise<PullR
 
 const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullResult | undefined> => {
     const theirCommits = their.commits;
-    const theirChanges = their.changes.reduce((result, changes) => { result.push(...changes); return result }, [] as Change[]);
+    let theirChanges = their.changes.reduce((result, changes) => { result.push(...changes); return result }, [] as Change[]);
 
     const docId = their.documentId;
 
     // Create the document if we don't have it
-    const doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [docId]);
+    let doc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [docId]);
     if (!doc) {
-        await db.exec(`INSERT INTO "crr_documents" (id, head) VALUES (?, ?)`, [docId, null]);
+        doc = await createDocument(db, docId, null);
     }
 
     if (theirCommits.length === 0 || theirChanges.length === 0) return;
@@ -660,10 +444,9 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
     //
     let ourCommits: Commit[] = [];
 
-    // Check if they have already incorporated our commits through a merge ...
-    // @NOTE: Incorporated here means that the pushing client had knowledge of our
-    // commit and have merged our changes
-    let incorporated = false;
+    // Check if they have already incorporated our commits through a merge.
+    // in that case, we can simply accept their changes.
+    let theyHaveIncorporatedOurChanges = false;
     const ourHead = await getHead(db, docId);
     if (ourHead) {
         for (const commit of theirCommits) {
@@ -672,14 +455,15 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
                 if (ourHead.id === aId || ourHead.id === bId) {
                     // They have !! Just apply their commits ontop of ours without a new merge
                     ourCommits = [];
-                    incorporated = true;
+                    theyHaveIncorporatedOurChanges = true;
                 }
             }
         }
     }
 
+    // Find a common ancestor commit from which we diverged
     let commonAncestor: Commit | undefined;
-    if (!incorporated) {
+    if (!theyHaveIncorporatedOurChanges) {
         const commonAncestorId = theirCommits[0].parent;
         if (commonAncestorId === null) {
             // We have no common ancestor other than the root. All our commits to this document are thus divergent and needs to be merged
@@ -693,33 +477,40 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
         }
     }
 
+    const ourCommitChanges = flatten(await getChangesForCommits(db, ourCommits));
+    const ourWorkingSet = await db.getUncommittedChanges(docId);
+    let ourChanges = [...ourCommitChanges, ...ourWorkingSet];
 
-    if (ourCommits.length > 0) {
-        // The two branches have diverged
-        assert(commonAncestor || docId === "main"); // Its only possible to not have a common ancestor here if the entire database is versioned a.k.a docId = "main"
+    // "Deduplicate" both our changes and their changes to not care about different versions of
+    // the same cell changes. We only care about the latest one of those
+    ourChanges = deduplicateChanges(ourChanges);
+    theirChanges = deduplicateChanges(theirChanges);
 
-        const ourChanges = flatten(await getChangesForCommits(db, ourCommits));
 
-        const collides = (their: Change, ours: Change[]) => {
-            return ours.find(our => {
-                return (
-                    our.pk === their.pk &&
-                    our.tbl_name === their.tbl_name &&
-                    our.col_id === their.col_id &&
-                    our.value !== their.value
-                );
-            })
-        }
+    const collides = (their: Change, ours: Change[]) => {
+        return ours.find(our => {
+            return (
+                our.pk === their.pk &&
+                our.tbl_name === their.tbl_name &&
+                our.col_id === their.col_id &&
+                our.value !== their.value
+            );
+        })
+    }
 
+    const isManualConflictColumn = (db: SqliteDB, table: string, column: string) => {
+        return db.crrColumns[table].find(col => col.col_id === column && col.manual_conflict === 1) !== undefined;
+    }
+
+    if (ourChanges.length > 0) {
         // Merge their changes with ours.
         //
-        // Merging happens through last-writer wins, unless the column
-        // is marked with 'manual_conflict = 1' in that case the conflict needs to be resolved by the user through 'db.resolveConflict()'.
-        const crrColumns = db.crrColumns;
+        // Merging happens through column-wise last-writer wins (auto-resolve), unless its a manual-conflict column.
+        // In that case we add those to the conflicts table to be resolved by the user.
+
         const accepted: Change[] = [];
         const merged: Change[] = [];
-        const cellConflicts: CellConflict[] = [];
-        const manualConflicts: CellConflict[] = [];
+        const potentialManualConflicts: CellConflict[] = [];
         let i = 0;
         for (; i < theirChanges.length; i++) {
             const theirChange = theirChanges[i];
@@ -728,32 +519,81 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
             if (collided) {
                 const ourChange = collided;
 
-                cellConflicts.push([ourChange, theirChange]);
-
-                const autoResolve = crrColumns[ourChange.tbl_name].find(col => col.col_id === ourChange.col_id && !col.manual_conflict) !== undefined;
+                const autoResolve = !isManualConflictColumn(db, ourChange.tbl_name, ourChange.col_id);
                 if (autoResolve) {
                     if (isLastWriter(theirChange, ourChange)) {
                         accepted.push(theirChange);
                     }
                 } else {
-                    manualConflicts.push([ourChange, theirChange]);
+                    potentialManualConflicts.push([ourChange, theirChange]);
                 }
             } else {
+                // Should we still check for lww if the values are the same? Right now we just pick
+                // their change to add to merge.
                 accepted.push(theirChange);
             }
             merged.push(theirChange);
         }
+
+        // Check if the potential cell collisons on manual conflict columns actually differ
+        // from the common base point. This table describes how a cell collision
+        // gets "resolved"
+        //
+        //  Base    Our     Their      Conflict     Resolve
+        //   0       1        1           No          LWW 
+        //   0       1        0           No          Our 
+        //   0       0        1           No          Their 
+        //   0       1        2           Yes         Manual 
+        const rowConflicts: RowConflict<any>[] = [];
+        if (potentialManualConflicts.length > 0) {
+            const baseSnapshot = await db.getDocumentSnapshot(commonAncestor);
+            const theirSnapshot = baseSnapshot.applyChanges(theirChanges);
+
+            for (const [our, their] of potentialManualConflicts) {
+                const docId = our.document;
+                const table = our.tbl_name;
+                const pk = our.pk;
+                const col = our.col_id;
+
+                const baseValue = baseSnapshot.getRow<any>(table, pk)[col];
+                const ourValue = our.value;
+                const theirValue = their.value;
+
+                if (ourValue === theirValue) {
+                    if (isLastWriter(our, their))
+                        accepted.push(our);
+                    else accepted.push(their);
+                }
+                else if (baseValue !== ourValue && baseValue === theirValue) accepted.push(our);
+                else if (baseValue === ourValue && baseValue !== theirValue) accepted.push(their);
+                else if (baseValue !== ourValue && baseValue !== theirValue) {
+                    const conflict = rowConflicts.find(c => c.pk === pk && c.tbl_name === table && !c.columns.includes(col));
+                    if (!conflict) {
+                        rowConflicts.push({
+                            document: docId,
+                            tbl_name: table,
+                            pk: pk,
+                            columns: [col],
+                            their: theirSnapshot.getRow(table, pk)
+                        });
+                    } else {
+                        conflict.columns.push(col);
+                    }
+                }
+                else {
+                    console.error(`**BUG**: Unhandled case (base, our, their)`, baseValue, ourValue, theirValue);
+                }
+            }
+
+            await saveRowConflicts(db, rowConflicts);
+        }
+
 
         // Any leftovers of our changes gets pushed onto the merged changes
         if (i < ourChanges.length) {
             const leftover = ourChanges.slice(i, -1);
             merged.push(...leftover);
         }
-
-        // Populate the conflicting cells with their full rows
-        const rowConflicts = await getRowConflictsFromCellConflicts(db, cellConflicts, commonAncestor, docId);
-        const manualRowConflicts = await getRowConflictsFromCellConflicts(db, manualConflicts, commonAncestor, docId);
-        await saveRowConflicts(db, manualRowConflicts);
 
         // Create the merged commit
         const theirLastCommit = theirCommits[theirCommits.length - 1];
@@ -791,10 +631,15 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
             documentId: docId,
             merge,
             conflicts: rowConflicts,
-            manualConflicts: manualRowConflicts,
-            appliedChanges
+            appliedChanges,
+            commonAncestor: commonAncestor,
+            concurrentChanges: {
+                our: ourChanges,
+                their: theirChanges
+            }
         };
-    } else {
+    }
+    else {
         const appliedChanges = await applyChanges(db, theirChanges);
         await saveChanges(db, theirChanges);
         await saveCommits(db, theirCommits);
@@ -808,83 +653,37 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
         return {
             documentId: docId,
             conflicts: [],
-            manualConflicts: [],
-            appliedChanges
+            appliedChanges,
+            concurrentChanges: {
+                our: ourChanges, // empty
+                their: theirChanges,
+            }
         };
     }
 }
 
-const getRowConflictsFromCellConflicts = async (db: SqliteDB, cellConflicts: CellConflict[], commonAncestor: Commit, documentId: string) => {
-    if (cellConflicts.length === 0) return [];
+export const deduplicateChanges = (changes: Change[]) => {
+    const result: Change[] = [];
 
-    const conflictingChanges: { [tblName: string]: { [pk: string]: [our: Change, their: Change][] } } = {};
-    const cc = conflictingChanges;
-    for (const [our, their] of cellConflicts) {
-        const tblName = our.tbl_name;
-        const pk = our.pk;
-        if (cc[tblName]) {
-            if (cc[tblName][pk]) {
-                cc[tblName][pk].push([our, their]);
-            } else {
-                cc[tblName][pk] = [[our, their]];
-            }
+    for (const a of changes) {
+        const existingIndex = result.findIndex(b => {
+            return (
+                a.pk === b.pk &&
+                a.tbl_name === b.tbl_name &&
+                a.col_id === b.col_id
+            )
+        });
+        if (existingIndex === -1) {
+            result.push(a);
         } else {
-            cc[tblName] = { [pk]: [[our, their]] };
+            const b = result[existingIndex];
+            if (a.created_at > b.created_at) {
+                result[existingIndex] = a;
+            }
         }
     }
 
-    const pksPerTable: { [tblName: string]: string[] } = {};
-    for (const [tblName, rows] of Object.entries(conflictingChanges)) {
-        pksPerTable[tblName] = Object.keys(rows);
-    }
-
-    const rowsPerTable: { [tblName: string]: any[] } = {};
-    for (const [tblName, pks] of Object.entries(pksPerTable)) {
-        rowsPerTable[tblName] = await db.select<any[]>(`SELECT * FROM "${tblName}" WHERE ${pksEqual(db, tblName, pks)}`, []);
-    }
-
-    const conflictingRows: RowConflict<any>[] = [];
-
-    const baseDocument = await getDocumentSnapshot(db, commonAncestor);
-    for (const [tblName, rows] of Object.entries(rowsPerTable)) {
-        for (const row of rows) {
-            const pk = pkEncodingOfRow(db, tblName, row);
-
-            const changes = conflictingChanges[tblName][pk];
-
-            if (!baseDocument[tblName]) {
-                // @TODO: Filter out tables that shouldn't be replicated in the syncer so they never propogate to any server
-                console.warn(`Table '${tblName}' is not part of a document`);
-                continue;
-            }
-
-            // Construct 3 versions of the row (base, ours, theirs)
-            const base = baseDocument[tblName][pk];
-            const our = { ...base };
-            const their = { ...base };
-            const columns: string[] = [];
-            for (const [ourChange, theirChange] of changes) {
-                const col = ourChange.col_id;
-                our[col] = ourChange.value;
-                their[col] = theirChange.value;
-                columns.push(col);
-            }
-
-            const conflict: RowConflict<any> = {
-                document: documentId,
-                tbl_name: tblName,
-                pk,
-                columns,
-                base,
-                our,
-                their
-            };
-
-            conflictingRows.push(conflict);
-        }
-    }
-
-    return conflictingRows;
+    return result;
 }
 
 /** Resolve a single conflict */
@@ -900,9 +699,9 @@ export const resolveConflict = async (db: SqliteDB, table: string, pk: string, d
 
     const conflictRow = await db.first<RowConflict<any>>(`SELECT * FROM "crr_conflicts" WHERE document = ? AND tbl_name = ? AND pk = ?`, [documentId, table, pk]);
     if (!conflictRow) {
-        throw new Error("Conflict was not found");
+        console.warn(`Conflict does not exist`);
+        return;
     }
-
     const conflict = deserializeConflict<any>(conflictRow);
 
     const merge = await getHead(db, documentId);
@@ -910,37 +709,60 @@ export const resolveConflict = async (db: SqliteDB, table: string, pk: string, d
         throw new Error("**BUG** Expected that the current HEAD is pointing at the current merge");
     }
 
-    // Generate duplicate cell changes with a new timestamp
-    const winningRow = choice === "our" ? conflict.our : conflict.their;
-    const winningChanges: Change[] = [];
+    // Compare their row against how the row currently looks
+    const currentRow = await db.first<any>(`SELECT * FROM "${table}" WHERE ${pkEqual(db, table, pk)}`, []);
 
-    const now = (new Date).getTime();   // @TODO: Needs to be made into a HLC
-    for (const column of conflict.columns) {
+    if (!currentRow) {
+        // @TODO: Handle cases with deletes
+        throw new Error("NOT IMPLEMENTED");
+    }
+
+    // Generate duplicate cell changes with a new timestamp
+    let columnsToResolve: [col: string, winner: "our" | "their"][] = [];
+    if (choice === "all-their") {
+        columnsToResolve = Object.keys(conflict.their).map(col => [col, "their"]);
+    } else if (choice === "all-our") {
+        columnsToResolve = Object.keys(currentRow).map(col => [col, "our"]);
+    } else {
+        columnsToResolve = choice;
+    }
+
+    const winningChanges: Change[] = [];
+    const now = await createTimestamp(db);
+    for (const [column, winner] of columnsToResolve) {
         const change: Change = {
-            type: "update",     // @TODO: I guess we can technically also conflict with deletions/insertions???
+            type: "update",     // @TODO: I guess we can technically also conflict with deletions
             tbl_name: table,
             col_id: column,
             pk: pk,
-            value: winningRow[column],
+            value: winner === "our" ? currentRow[column] : conflict.their[column],
             site_id: db.siteId,
             created_at: now,
-            applied_at: 0,      // Set in saveChanges
+            applied_at: 0,      // Set in applyChanges
             version: merge.id,
             document: documentId,
         }
         winningChanges.push(change);
     }
-
     await applyChanges(db, winningChanges);
-    await db.exec(`DELETE FROM "crr_conflicts" WHERE document = ? AND tbl_name = ? AND pk = ?`, [documentId, table, pk]);
+
+
+    const conflictingColumns = conflict.columns;
+    const newConflictingColumns = conflictingColumns.filter(col => columnsToResolve.find(([x, _]) => col === x) === undefined);
+    if (newConflictingColumns.length === 0) {
+        // All conflicts are resolved on this row
+        await db.exec(`DELETE FROM "crr_conflicts" WHERE document = ? AND tbl_name = ? AND pk = ?`, [documentId, table, pk]);
+    } else {
+        // Update the list of conflicting columns to the ones still not resolved
+        const serializedColumns = JSON.stringify(newConflictingColumns);
+        await db.exec(`UPDATE "crr_conflicts" SET columns = ? WHERE document = ? AND tbl_name = ? AND pk = ?`, [serializedColumns, documentId, table, pk]);
+    }
 }
 
 const deserializeConflict = <T>(conflict: RowConflict<string>): RowConflict<T> => {
     return {
         ...conflict,
         columns: JSON.parse((conflict.columns as unknown as string)),
-        base: JSON.parse(conflict.base),
-        our: JSON.parse(conflict.our),
         their: JSON.parse(conflict.their),
     }
 }
@@ -953,97 +775,6 @@ export const getConflicts = async <T>(db: SqliteDB, table: string, documentId = 
     return result;
 }
 
-/** Gets parent commits up until and including the given commit following the authors commits on any merges/branches */
-const getAncestors = (G: CommitGraph, commit: Commit) => {
-
-    const pickOurChild = (children: CommitNode[]) => {
-        if (children.length === 1) return children[0];
-        return children.find(child => child.commit.author === commit.author);
-    }
-
-    // On branches (children > 1), we follow the children of the commit author
-    const immediateParents: CommitNode[] = [G.root];
-
-    let node = G.root;
-    while (node.children.length > 0) {
-        const children = node.children;
-
-        const child = pickOurChild(children);
-        if (!child) {
-            // This should ideally not happen, but lets not assert it to not break client applications
-            console.error(`**Corrupt**: Missing child in commit graph. Unable to follow commits to the head of the document`);
-            break;
-        }
-
-        immediateParents.push(child);
-        if (child.commit.id === commit.id) {
-            break;
-        } else {
-            node = child;
-        }
-    }
-
-    return immediateParents;
-}
-
-const getCommonAncestor = (G: CommitGraph, a: Commit, b: Commit) => {
-
-    const aAncestors = getAncestors(G, a);
-    const bAncestors = getAncestors(G, b);
-
-    // Do an intersection to find all common ancestors
-    const commonAncestors: CommitNode[] = intersect(aAncestors, bAncestors);
-    assert(commonAncestors.length > 0);
-
-    // The lowest common ancestor (common ancestor) will be the last one
-    return commonAncestors[commonAncestors.length - 1];
-}
-
-
-/** Gets a snapshot of a document at a certain commit */
-export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit): Promise<DocumentSnapshot> => {
-    const G = await getCommitGraph(db, commit.document);
-    if (!G) return {};
-
-    const pastCommitsNodes = getAncestors(G, commit);
-    const pastCommits = pastCommitsNodes.map(node => node.commit);
-    const pastChanges = flatten(await getChangesForCommits(db, pastCommits));
-
-    const document: { [tblName: string]: { [pk: string]: { [col: string]: any } } } = {};
-    for (const change of pastChanges) {
-        const tblName = change.tbl_name;
-        const pk = change.pk;
-        const col = change.col_id;
-
-        if (change.type === "delete") {
-            delete document[tblName][pk];
-            continue;
-        }
-
-        if (document[tblName]) {
-            if (document[tblName][pk]) {
-                document[tblName][pk][col] = change.value;
-            } else {
-                document[tblName][pk] = { [col]: change.value };
-            }
-        } else {
-            document[tblName] = { [pk]: { [col]: change.value } };
-        }
-
-    }
-
-    return document;
-}
-
-/** Gets all the rows for a particular table of document snapshot */
-export const getSnapshotRows = <T>(db: SqliteDB, snapshot: DocumentSnapshot, tableName: string) => {
-    const table = snapshot[tableName];
-    if (table) {
-        const rows = Object.values(table) as T[];
-        return rows;
-    }
-    return [];
-}
 
 type RowChange = {
     pk: string
@@ -1058,67 +789,8 @@ type TableDiff = {
     deleted: RowChange[]
 }
 
-// @WIP @Cleanup - Needs fixing or be removed???
+// @WIP @TODO @Cleanup - Needs fixing or be removed???
 export const getDiff = async (db: SqliteDB, a: Commit, b: Commit) => {
-    // const G = await getCommitGraph(db, a.document);
-    // if (!G) return;
-
-    // const aAncestors = getAncestors(G, a);
-    // const bAncestors = getAncestors(G, b);
-    // const commonAncestor = getCommonAncestor(G, a, b);
-
-    // // Get all the changes made between the common ancestor and the two commits a and b
-    // const getChangesBetween = async (ancestors: CommitNode[], commonAncestor: CommitNode) => {
-    //     const commitsBetween: Commit[] = [];
-    //     for (const ancestor of aAncestors) {
-    //         if (ancestor === commonAncestor) break;
-    //         commitsBetween.push(ancestor.commit);
-    //     }
-    //     const changesBetween = await getChangesForCommits(db, commitsBetween);
-    //     return changesBetween;
-    // }
-
-    // const aChanges = flatten(await getChangesBetween(aAncestors, commonAncestor));
-    // const bChanges = flatten(await getChangesBetween(bAncestors, commonAncestor));
-
-    const diffs: { [tblName: string]: TableDiff } = {};
-
-    const snapshotA = await getDocumentSnapshot(db, a);
-    const snapshotB = await getDocumentSnapshot(db, b);
-
-    // Perform a document diff
-    for (const [table, rowsA] of Object.entries(snapshotA)) {
-        const rowsB = snapshotB[table];
-
-        for (const [pk, rowB] of Object.entries(rowsB)) {
-
-            const rowA = rowsA[pk];
-
-            // Inserted in B?
-            if (!rowA) {
-                if (diffs[table]) {
-                    diffs[table].inserted = [{ pk, columns: [], row: rowB }];
-                } else {
-                    diffs[table] = { tblName: table, inserted: [{ pk, columns: [], row: rowB }], updated: [], deleted: [] };
-                }
-                continue;
-            }
-
-            // Modified in B?
-            for (const [col, valueB] of Object.entries(rowB)) {
-
-                const valueA = rowsA[col];
-
-                const columnsModified: string[] = [];
-                if (valueA !== valueB) {
-                    columnsModified.push(col);
-                }
-            }
-
-        }
-    }
-
-
 
 }
 
@@ -1158,8 +830,6 @@ const saveRowConflicts = async (db: SqliteDB, conflicts: RowConflict<any>[]) => 
             c.tbl_name,
             c.pk,
             JSON.stringify(c.columns),
-            JSON.stringify(c.base),
-            JSON.stringify(c.our),
             JSON.stringify(c.their),
         ];
     }

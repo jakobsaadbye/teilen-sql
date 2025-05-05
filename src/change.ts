@@ -236,7 +236,7 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
     }
     const newClock = receiveHlc(ourClock, theirClock);
     const newClockEncoded = encodeHlc(newClock);
-    await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock)`, [newClockEncoded]);
+    await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock) VALUES (?)`, [newClockEncoded]);
 
 
     // Patch any fractional index columns that might have collided. 

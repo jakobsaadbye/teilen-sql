@@ -188,7 +188,7 @@ export function assert(expr: unknown, msg?: string): asserts expr {
     }
 }
 
-export const unique = (arr: any[]) => {
+export const unique = <T>(arr: T[]) => {
     return [...new Set(arr)];
 }
 
@@ -202,6 +202,17 @@ export const intersect = <T>(A: T[], B: T[], comparisonFn: (a: T, b: T) => boole
             } else {
                 result.push(x);
             }
+        }
+    }
+    return result;
+}
+
+export const intersectCross = <T>(A: T[], B: T[], comparisonFn: (a: T, b: T) => boolean = (a, b) => a === b) => {
+    const result: [a: T, b: T][] = [];
+    for (const a of A) {
+        const x = B.find((b) => comparisonFn(a, b));
+        if (x) {
+            result.push([a, x]);
         }
     }
     return result;

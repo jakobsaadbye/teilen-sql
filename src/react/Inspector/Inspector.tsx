@@ -339,7 +339,7 @@ export const Inspector = ({ children }) => {
                 <header className="flex p-1 justify-between items-center bg-gray-300 border-b border-gray-400">
                     <div className="flex gap-x-2">
                         <div>
-                            <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200" title="Open SQL Editor (ctrl+s)">
+                            <button onClick={() => setSqlEditorOpen(prev => !prev)} className="px-2 bg-gray-300 cursor-default hover:bg-gray-200 rounded-sm" title="Open SQL Editor (ctrl+s)">
                                 <p className="text-sm font-medium">SQL</p>
                             </button>
                         </div>
@@ -368,7 +368,7 @@ export const Inspector = ({ children }) => {
                                         key={i}
                                         onClick={(e) => handleClickTable(e, i)}
                                         onContextMenu={(e) => handleClickTable(e, i)}
-                                        className={twMerge(`flex gap-x-1 pr-2 hover:bg-gray-200`, isSelected('table', i) && 'bg-gray-100')}
+                                        className={twMerge(`flex gap-x-1 pr-2 hover:bg-gray-200 rounded-sm`, isSelected('table', i) && 'bg-gray-100')}
                                     >
                                         <TableIcon className="min-w-6 min-h-6 fill-blue-400" />
                                         <p className="select-none truncate">{table.name}</p>
@@ -448,8 +448,8 @@ export const Inspector = ({ children }) => {
                         <footer className="absolute bottom-8 pt-2 pb-4 mb-0 bg-gray-300 w-full">
                             <div className="flex justify-between">
                                 <div className="flex space-x-2">
-                                    <p onClick={() => setMode('data')} className={`px-4 ${mode === 'data' && 'bg-gray-100'}`}>Data</p>
-                                    <p onClick={() => setMode('structure')} className={`px-4 ${mode === 'structure' && 'bg-gray-100'}`}>Structure</p>
+                                    <p onClick={() => setMode('data')} className={`px-4 rounded-sm ${mode === 'data' && 'bg-gray-100'}`}>Data</p>
+                                    <p onClick={() => setMode('structure')} className={`px-4 rounded-sm ${mode === 'structure' && 'bg-gray-100'}`}>Structure</p>
                                 </div>
 
                                 {(mode === 'data' || mode === 'structure') && <p className="text-gray-600">{rowCount?.count ?? 0} rows</p>}

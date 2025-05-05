@@ -16,7 +16,6 @@ Deno.test("Send HLC - test clock drift", () => {
     let clock = newHlc();
 
     // Increment the physical-time 5ms to simulate NTP drift
-    clock = sendHlc(clock);
     clock.pt += 5;
 
     // Doing a new wall-clock reading should now be behind clock.pt (pt <= clock.pt)

@@ -1,7 +1,7 @@
 import { setupTwoDatabases, Todo } from "./_common.ts";
 import { assertEquals } from "jsr:@std/assert/assert-equals";
 import { assertExists } from "jsr:@std/assert/assert-exists";
-import { assert } from "@/index.ts";
+import { assert, Commit } from "../index.ts";
 
 Deno.test("Checkout back and forth", async () => {
     const tables = `

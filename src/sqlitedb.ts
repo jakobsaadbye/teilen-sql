@@ -1,8 +1,9 @@
 import { saveChanges, saveFractionalIndexCols, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
-import { sqlExplainExec, generateUniqueId, flatten, sqlPlaceholdersNxM } from "./utils.ts"
+import { sqlExplainExec, generateUniqueId } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
-import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, getDocumentSnapshot, ConflictChoice, resolveConflict, getPushCount, DocumentSnapshot, getSnapshotRows } from "./versioning.ts";
-import { decodeHlc, encodeHlc, newHlc, sendHlc } from "./hlc.ts";
+import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, ConflictChoice, resolveConflict, getPushCount, getHead } from "./versioning.ts";
+import { getDocumentSnapshot } from "./snapshot.ts";
+import { createTimestamp } from "./hlc.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
@@ -156,7 +157,7 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents"];
+        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents", "crr_conflicts"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
             if (frameworkMadeTables.includes(table.name)) continue;
@@ -256,14 +257,14 @@ export class SqliteDB {
         return await getDocumentSnapshot(this, commit);
     }
 
-    /** Gets all the rows for a particular table of a document snapshot */
-    getSnapshotRows<T>(snapshot: DocumentSnapshot, tableName: string) {
-        return getSnapshotRows<T>(this, snapshot, tableName);
-    }
-
     /** Gets the non-pushed commit count for a given document */
     async getPushCount(documentId = "main") {
         return await getPushCount(this, documentId);
+    }
+
+    /** Returns the HEAD commit of the document */
+    async getHead(documentId = "main") {
+        return await getHead(this, documentId);
     }
 
     //////////////////////////
@@ -365,18 +366,10 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
         }
 
         // Produce a new clock value for the changes
-        let clock;
-        const temp = await db.first<TemporaryData>(`SELECT * FROM "crr_temp"`, []);
-        if (!temp) {
-            const clockHlc = newHlc();
-            clock = encodeHlc(clockHlc);
-            await db.exec(`INSERT INTO "crr_temp" (clock, document) VALUES (?, ?)`, [clock, documentId]);
-        } else {
-            let clockHlc = decodeHlc(temp.clock);
-            clockHlc = sendHlc(clockHlc);
-            clock = encodeHlc(clockHlc);
-            await db.exec(`INSERT OR REPLACE INTO "crr_temp" (clock, document) VALUES (?, ?)`, [clock, documentId]);
-        }
+        const clock = await createTimestamp(db);
+
+        // Update the document to which we are adding changes
+        await db.exec(`UPDATE "crr_temp" SET document = ?`, [documentId]);
 
         const tblName = sqlExplainExec(sql);
 

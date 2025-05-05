@@ -1,7 +1,9 @@
-import { SqliteDB, applyChanges } from "../index.ts";
+import { SqliteDB, applyChanges, assert } from "../index.ts";
 import { assertEquals, assertLess, assertExists } from "jsr:@std/assert";
 import { delay, pullCommits, pushCommits, randomTodoStrings, setupThreeDatabases, setupTwoDatabases, todoTable } from "./_common.ts";
-import { Commit, getCommitGraph, printCommitGraph } from "../src/versioning.ts";
+import { Commit, deduplicateChanges, getChangesForCommits } from "../src/versioning.ts";
+import { flatten } from "@/src/utils.ts";
+import { getCommitGraph, printCommitGraph } from "@/src/graph.ts";
 
 
 Deno.test.ignore("Commit Graph", async () => {
@@ -28,7 +30,6 @@ Deno.test.ignore("Commit Graph", async () => {
     assertExists(G);
     printCommitGraph(G);
 })
-
 
 Deno.test("Change generation", async () => {
     const tables = `
