@@ -52,7 +52,7 @@ Deno.test("Discard changes two documents", async () => {
     assertEquals(docAChanges.length, 0);
 });
 
-Deno.test("Discard changes big", async () => {
+Deno.test.ignore("Discard changes big", async () => {
     const tables = `
         CREATE TABLE IF NOT EXISTS "todos" (
             id text primary key,

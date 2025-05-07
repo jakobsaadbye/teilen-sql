@@ -82,6 +82,7 @@ const createDocument = async (db: SqliteDB, id: string, head: string | null) => 
 }
 
 export const commit = async (db: SqliteDB, message: string, documentId: string): Promise<Commit | undefined> => {
+    return await db.tx(async () => {
 
     const commit: Commit = {
         id: generateUniqueId(),
@@ -91,6 +92,14 @@ export const commit = async (db: SqliteDB, message: string, documentId: string):
         author: db.siteId,
         created_at: (new Date).getTime(),
         applied_at: 0       // Set in saveCommits
+    }
+
+    // Prevent committing if there is any conflicts present in the document
+    const conflicts = await db.select<RowConflict<any>[]>(`SELECT * FROM "crr_conflicts" WHERE document = ?`, [documentId]);
+    if (conflicts.length > 0) {
+        // @TODO: We should probably return some kind of error here so that the application can respond to this
+        console.log(`Trying to commit while there is still conflicts in the document. All conflicts needs to be resolved before comitting`);
+        return;
     }
 
     // Update all uncommitted changes to have this commit as their version
@@ -115,9 +124,25 @@ export const commit = async (db: SqliteDB, message: string, documentId: string):
     await saveCommits(db, [commit]);
 
     // Advance head of document
-    await db.execOrThrow(`UPDATE "crr_documents" SET head = ? WHERE id = ?`, [commit.id, doc.id]);
+    doc.head = commit.id;
+    await saveDocument(db, doc);
 
     return commit;
+    
+    });
+}
+
+const saveDocument = async (db: SqliteDB, doc: Document) => {
+    await db.execOrThrow(`
+        INSERT INTO "crr_documents" (id, head, last_pulled_at, last_pushed_commit, last_pulled_commit)
+        VALUES ${sqlPlaceholdersNxM(5, 1)}
+        ON CONFLICT DO UPDATE SET
+            id = EXCLUDED.id,
+            head = EXCLUDED.head,
+            last_pulled_at = EXCLUDED.last_pulled_at,
+            last_pushed_commit = EXCLUDED.last_pushed_commit,
+            last_pulled_commit = EXCLUDED.last_pulled_commit
+    `, [doc.id, doc.head, doc.last_pulled_at, doc.last_pushed_commit, doc.last_pulled_commit]);
 }
 
 export const checkout = async (db: SqliteDB, targetID: string) => {

@@ -156,6 +156,18 @@ export class SqliteDB {
         return { data: results as T, error };
     }
 
+    async tx<T>(fn: () => T) : Promise<T> {
+        await this.exec(`BEGIN;`, [], { notify: false });
+        try {
+            const result = await fn();
+            await this.exec(`COMMIT;`, [], { notify: false });
+            return result;
+        } catch (e) {
+            await this.exec(`ROLLBACK;`, [], { notify: false });
+            throw e;
+        }
+    }
+
     async upgradeAllTablesToCrr() {
         const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents", "crr_conflicts"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
@@ -384,7 +396,6 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
 
         await saveFractionalIndexCols(db, appliedChanges);
         await saveChanges(db, appliedChanges);
-        // await compactChanges(db, appliedChanges);
     } catch (e) {
         await db.exec(`ROLLBACK;`, [], { notify: false });
         return e;

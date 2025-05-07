@@ -35,7 +35,9 @@ export class CommitGraph {
             queue.push(...node.parents);
         }
 
-        return A.values().toArray().toSorted((a, b) => a.created_at - b.created_at);
+        const commits = [...A.values()];
+        commits.sort((a, b) => a.created_at - b.created_at);
+        return commits;
     }
 
     /** Returns all the commits that decends from the given commit sorted from oldest to newest */
@@ -54,7 +56,9 @@ export class CommitGraph {
             queue.push(...node.children);
         }
 
-        return D.values().toArray().toSorted((a, b) => a.created_at - b.created_at);
+        const commits = [...D.values()];
+        commits.sort((a, b) => a.created_at - b.created_at);
+        return commits;
     }
 
     /** Returns weather commit a is an ancestor of b  */

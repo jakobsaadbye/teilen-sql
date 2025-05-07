@@ -58,17 +58,27 @@ export class SqliteDBWrapper {
     }
 
     async select<T>(sql: string, params: any[]): Promise<T> {
-        // console.log(sql, params);
         return await this.#db.prepare(sql).all(...params) as T;
     }
 
     async selectWithError<T>(sql: string, params: any[]): Promise<{ data: T, error?: Error }> {
-        // console.log(sql, params);
         try {
             const data = await this.#db.prepare(sql).all(...params) as T;
             return { data, error: undefined };
         } catch (e) {
             return { data: undefined, error: e };
+        }
+    }
+
+    async tx<T>(fn: () => T) : Promise<T> {
+        await this.exec(`BEGIN;`, []);
+        try {
+            const result = await fn();
+            await this.exec(`COMMIT;`, []);
+            return result;
+        } catch (e) {
+            await this.exec(`ROLLBACK;`, []);
+            throw e;
         }
     }
 
@@ -100,6 +110,8 @@ export class SqliteDBWrapper {
 
         await this.extractPks();
     }
+
+
 
     //////////////////////////
     //  Git-style versioning
