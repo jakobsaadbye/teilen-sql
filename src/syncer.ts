@@ -1,7 +1,7 @@
 import { applyChanges, Change, Client } from "./change.ts";
 import { SqliteDB } from "./sqlitedb.ts";
 import { unique, assert } from "./utils.ts";
-import { applyPull, Commit, Document, PullResponse, PushResponse } from "./versioning.ts";
+import { applyPull, Commit, createDocument, Document, PullResponse, PushResponse, saveDocument } from "./versioning.ts";
 
 type SyncEventType = "change";
 
@@ -102,13 +102,16 @@ export class Syncer {
         }
     }
 
-    async pushChangesWs(ws: WebSocket) {
-        const client = await this.db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.db.siteId]);
-        if (!client) return;
+    async pushChangesWs(ws: WebSocket, documentId = "main") {
+        const doc = await this.db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) {
+            console.log(`Document '${documentId}' was not found while trying to push changes`);
+            return;
+        };
 
-        const lastPushedAt = client.last_pushed_at;
-        const changes = await this.db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.db.siteId]);
-        const commits = await this.db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE created_at > ? AND author = ? ORDER BY created_at ASC`, [lastPushedAt, this.db.siteId]);
+        const changes = await this.db.select<Change[]>(`
+            SELECT * FROM "crr_changes" WHERE document = ? AND site_id = ? AND applied_at > ? AND version = '0'
+        `, [doc.id, this.db.siteId, doc.last_pushed_at]);
 
         console.log(`Pushing ${changes.length} changes`);
         if (changes.length === 0) return;
@@ -116,7 +119,7 @@ export class Syncer {
         const msg = JSON.stringify({
             type: "push-changes",
             data: {
-                commits,
+                doc,
                 changes
             },
         });
@@ -158,13 +161,14 @@ export class Syncer {
             const push = await response.json() as PushResponse;
             switch (push.status) {
             case "ok": {
+                const latestAcknowledgedCommit = pushRequest.commits[pushRequest.commits.length - 1];
                 await db.exec(`
                     UPDATE "crr_documents" SET 
                         last_pulled_at = ?,
-                        last_pushed_commit = head, 
-                        last_pulled_commit = head 
+                        last_pushed_commit = ?, 
+                        last_pulled_commit = ? 
                     WHERE id = ?
-                `, [push.appliedAt, push.documentId]);
+                `, [push.appliedAt, latestAcknowledgedCommit, latestAcknowledgedCommit, push.documentId]);
                 return;
             }
             case "needs-pull": {
@@ -255,8 +259,9 @@ export class Syncer {
 
         switch (msg.type) {
             case "push-changes-ok": {
-                const err = await this.db.exec(`UPDATE "crr_clients" SET last_pushed_at = ? WHERE site_id = ?`, [new Date().getTime(), this.db.siteId]);
-                if (err !== undefined) console.error(err);
+                const doc = msg.data as Document;
+                doc.last_pushed_at = (new Date).getTime();
+                await saveDocument(this.db, doc);
                 return;
             }
             case "push-changes-fail": {
@@ -265,27 +270,35 @@ export class Syncer {
                 return;
             }
             case "pull-hint": {
-                const client = await this.db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.db.siteId]);
-                if (!client) return;
+                const docId = msg.data as string;
+                let doc = await this.db.getDocument(docId);
+                if (!doc) {
+                   doc = await createDocument(this.db, docId, null);
+                }
 
-                const msg = JSON.stringify({
+                const pullRequest = JSON.stringify({
                     type: "pull-changes",
-                    data: {
-                        lastPulledAt: client.last_pulled_at
-                    }
+                    data: doc
                 })
                 
-                ws.send(msg);
+                ws.send(pullRequest);
                 return;
             }
             case "pull-changes-ok": {
+                const doc = msg.data.document as Document; 
                 const changes = msg.data.changes as Change[];
-                const pulledAt = msg.data.pulledAt as number;
+
+                // @NOTE: We use the time at which the server pulled the changes and not the 
+                // current time at which we receive back this ok message as other clients
+                // might have made changes in the time between us requesting changes and receiving changes
+                // and thus we wouldn't be able to see those changes in the middle
+                const serverPulledAt = msg.data.pulledAt as number;
                 
                 try {
                     const appliedChanges = await applyChanges(this.db, changes);
 
-                    await this.db.execOrThrow(`UPDATE "crr_clients" SET last_pulled_at = ? WHERE site_id = ?`, [pulledAt, this.db.siteId]);
+                    doc.last_pulled_at = serverPulledAt;
+                    await saveDocument(this.db, doc);
 
                     this.notify({ type: "change", data: appliedChanges });
 

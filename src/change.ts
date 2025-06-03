@@ -91,11 +91,13 @@ export const applyChanges = async (db: SqliteDB, changes: Change[]) => {
                 const tblName = updateSet[0].tbl_name;
                 const pk = updateSet[0].pk;
 
-                const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE pk = ? ORDER BY created_at DESC`, [pk]);
+                const currentChanges = await db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE tbl_name = ? AND pk = ? ORDER BY created_at DESC`, [tblName, pk]);
                 const fkCols = fkColsPerTable[tblName];
 
                 const updatesToApply: Change[] = [];
                 for (const update of updateSet) {
+                    // NOTE: We find the previous change to this column. Because we sort the currentChanges by their timestamp, the first
+                    // change we find will also be the one with the highest timestamp which we compare against.
                     const prevChange = currentChanges.find(change => change.col_id === update.col_id);
                     if (isLastWriter(update, prevChange)) {
                         updatesToApply.push(update);
@@ -288,7 +290,7 @@ export const getChildChanges = async (db: SqliteDB, fkRelation: FkRelation) => {
 // }
 
 export const childFkRelations = (db: SqliteDB, parentTblName: string, parentPk: string) => {
-    const relations = [];
+    const relations: FkRelation[] = [];
     for (const [tblName, cols] of Object.entries(db.crrColumns)) {
         const fkCols = cols.filter(col => col.fk !== null && col.fk_on_delete === 'CASCADE' && col.fk.split("|")[0] === parentTblName);
         if (fkCols.length > 0) {

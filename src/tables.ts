@@ -61,6 +61,7 @@ export const insertCrrTablesStmt = `
         id text primary key,
         head text references crr_commits(id),
         last_pulled_at bigint not null default 0,
+        last_pushed_at bigint not null default 0,
         last_pulled_commit text references crr_commits(id),
         last_pushed_commit text references crr_commits(id)
     );

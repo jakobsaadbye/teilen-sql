@@ -140,7 +140,7 @@ export class SqliteDB {
         if (results.length === 0) {
             return undefined;
         }
-        return results[0] as T;
+        return results[0];
     }
 
     async select<T>(sql: string, params: any[]) {
@@ -201,6 +201,19 @@ export class SqliteDB {
         await attachChangeGenerationTriggers(this);
 
         this.ready = true;
+    }
+
+    /** 
+     * Gets non-pushed change count for a document.
+     * @Note Use this function when doing synchronous/real-time style updates as opposed to getUncommittedChangeCount() 
+     *  which assummes a commit based model
+    */
+    async getChangeCount(documentId = "main") {
+        const doc = await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+        if (!doc) return 0;
+
+        const row = await this.first<{ count: number }>(`SELECT COUNT(*) as count FROM "crr_changes" WHERE version = '0' AND site_id = ? AND applied_at > ? AND document = ?`, [this.siteId, doc.last_pushed_at, doc.id]);
+        return row!.count;
     }
 
     //////////////////////////
@@ -277,6 +290,11 @@ export class SqliteDB {
     /** Returns the HEAD commit of the document */
     async getHead(documentId = "main") {
         return await getHead(this, documentId);
+    }
+
+    /** Return the document with given id */
+    async getDocument(documentId: string) {
+        return await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
     }
 
     //////////////////////////

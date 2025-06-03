@@ -8,6 +8,7 @@ export type Document = {
     id: string
     head: string | null
     last_pulled_at: number
+    last_pushed_at: number
     last_pushed_commit: string | null
     last_pulled_commit: string | null
 }
@@ -67,18 +68,33 @@ export type PullResult = {
     }
 }
 
-const createDocument = async (db: SqliteDB, id: string, head: string | null) => {
+export const createDocument = async (db: SqliteDB, id: string, head: string | null) => {
     const doc: Document = {
         id: id,
         head: head,
         last_pulled_at: 0,
+        last_pushed_at: 0,
         last_pulled_commit: null,
         last_pushed_commit: null
     };
 
-    await db.execOrThrow(`INSERT INTO "crr_documents" (id, head) VALUES (?, ?)`, [doc.id, doc.head]);
+    await saveDocument(db, doc);
 
     return doc;
+}
+
+export const saveDocument = async (db: SqliteDB, doc: Document) => {
+    await db.execOrThrow(`
+        INSERT INTO "crr_documents" (id, head, last_pulled_at, last_pushed_at, last_pushed_commit, last_pulled_commit)
+        VALUES ${sqlPlaceholdersNxM(6, 1)}
+        ON CONFLICT DO UPDATE SET
+            id = EXCLUDED.id,
+            head = EXCLUDED.head,
+            last_pulled_at = EXCLUDED.last_pulled_at,
+            last_pushed_at = EXCLUDED.last_pushed_at,
+            last_pushed_commit = EXCLUDED.last_pushed_commit,
+            last_pulled_commit = EXCLUDED.last_pulled_commit
+    `, [doc.id, doc.head, doc.last_pulled_at, doc.last_pushed_at, doc.last_pushed_commit, doc.last_pulled_commit]);
 }
 
 export const commit = async (db: SqliteDB, message: string, documentId: string): Promise<Commit | undefined> => {
@@ -130,19 +146,6 @@ export const commit = async (db: SqliteDB, message: string, documentId: string):
     return commit;
     
     });
-}
-
-const saveDocument = async (db: SqliteDB, doc: Document) => {
-    await db.execOrThrow(`
-        INSERT INTO "crr_documents" (id, head, last_pulled_at, last_pushed_commit, last_pulled_commit)
-        VALUES ${sqlPlaceholdersNxM(5, 1)}
-        ON CONFLICT DO UPDATE SET
-            id = EXCLUDED.id,
-            head = EXCLUDED.head,
-            last_pulled_at = EXCLUDED.last_pulled_at,
-            last_pushed_commit = EXCLUDED.last_pushed_commit,
-            last_pulled_commit = EXCLUDED.last_pulled_commit
-    `, [doc.id, doc.head, doc.last_pulled_at, doc.last_pushed_commit, doc.last_pulled_commit]);
 }
 
 export const checkout = async (db: SqliteDB, targetID: string) => {
@@ -517,8 +520,7 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
             return (
                 our.pk === their.pk &&
                 our.tbl_name === their.tbl_name &&
-                our.col_id === their.col_id &&
-                our.value !== their.value
+                our.col_id === their.col_id
             );
         })
     }
@@ -557,11 +559,12 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
                 // their change to add to merge.
                 accepted.push(theirChange);
             }
+            
             merged.push(theirChange);
         }
 
         // Check if the potential cell collisons on manual conflict columns actually differ
-        // from the common base point. This table describes how a cell collision
+        // from a common base point. This table describes how a cell collision
         // gets "resolved"
         //
         //  Base    Our     Their      Conflict     Resolve
@@ -756,7 +759,7 @@ export const resolveConflict = async (db: SqliteDB, table: string, pk: string, d
     const now = await createTimestamp(db);
     for (const [column, winner] of columnsToResolve) {
         const change: Change = {
-            type: "update",     // @TODO: I guess we can technically also conflict with deletions
+            type: "update",     // @TODO: I guess we can technically also conflict with deletions?
             tbl_name: table,
             col_id: column,
             pk: pk,
@@ -844,11 +847,6 @@ const saveRowConflicts = async (db: SqliteDB, conflicts: RowConflict<any>[]) => 
 
     const columns = Object.keys(conflicts[0]);
 
-    // Serialize the conflicts
-    // @Space - Currently we just store the three different versions of the row (base, our, their) as a json string,
-    // as that makes it easy to serialize / deserialize, buttt, we are paying an extra cost in that we are duplicating information and the rows might be big.
-    // In most cases this should not be a problem, as the conflict rows are only temporary until they are resolved, but for long outstanding commits with a lot 
-    // of conflicts and documents, we might consider reconstructing the row conflicts in a more clever way from the changelog ...   - jsaad 20. April 2025
     const serialize = (c: RowConflict<any>) => {
         return [
             c.document,

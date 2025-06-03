@@ -1,5 +1,5 @@
 import { Database } from "jsr:@db/sqlite@0.12";
-import { SqliteDB, SqliteDBWrapper, applyChanges, insertCrrTablesStmt, createServerDb, CrrColumn, assert, PushResponse, applyPull } from "../index.ts";
+import { SqliteDB, SqliteDBWrapper, applyChanges, insertCrrTablesStmt, createServerDb, CrrColumn, assert, PushResponse, applyPull, sqlPlaceholdersMulti, generateUniqueId } from "../index.ts";
 import { assignSiteId } from "../src/sqlitedb.ts";
 import { attachChangeGenerationTriggers } from "../src/change.ts";
 
@@ -43,7 +43,7 @@ export const setupTwoDatabases = async (tables: string) => {
 
     await A.exec(tables, []);
     await B.exec(tables, []);
-    
+
     await A.upgradeAllTablesToCrr();
     await B.upgradeAllTablesToCrr();
     await A.finalize();
@@ -66,7 +66,7 @@ export const setupThreeDatabases = async (tables: string) => {
     A.name = "A";
     B.name = "B";
     S.name = "S";
-    
+
     await dropAllTables(A);
     await dropAllTables(B);
     await dropAllTables(S);
@@ -81,7 +81,7 @@ export const setupThreeDatabases = async (tables: string) => {
     await A.exec(tables, []);
     await B.exec(tables, []);
     await S.exec(tables, []);
-    
+
     await A.upgradeAllTablesToCrr();
     await B.upgradeAllTablesToCrr();
     await S.upgradeAllTablesToCrr();
@@ -219,6 +219,57 @@ export const maybeAutoPull = async (db: SqliteDB, remote: SqliteDB, response: Pu
         }
     }
 }
+
+
+const saveTodosHelper = async (db: SqliteDB, todos: Todo[]) => {
+    const values = [];
+    for (const t of todos) {
+        values.push(t.id, t.name, t.finished);
+    }
+    const err = await db.execTrackChanges(`
+            INSERT INTO "todos" 
+            VALUES ${sqlPlaceholdersMulti(todos)}
+            ON CONFLICT DO UPDATE SET 
+                name = EXCLUDED.name,
+                finished = EXCLUDED.finished
+        `, values)
+    if (err) console.error(err);
+}
+
+export const saveTodos = async (db: SqliteDB, todos: Todo[]) => {
+    // We need to save the todos in batches to not exceed SQLITE_MAX_VARIABLE_NUMBER of 999. sigh ....
+    const rounds = Math.ceil(todos.length / 1_000);
+    for (let i = 0; i < rounds; i++) {
+        let end = i * 1_000 + 1000;
+        if (end > todos.length) end = todos.length - 1;
+        const batch = todos.slice(i * 1_000, end + 1);
+        await saveTodosHelper(db, batch);
+    }
+}
+
+export const saveTodo = async (db: SqliteDB, todo: Todo) => {
+    await saveTodos(db, [todo]);
+}
+
+export const generateTodos = (n: number): Todo[] => {
+    const todos = new Array<Todo>(n);
+    for (let i = 0; i < n; i++) {
+        const r = Math.floor(Math.random() * (randomTodoStrings.length - 1))
+        const name = randomTodoStrings[r]
+        todos[i] = {
+            id: "x" + generateUniqueId(),
+            name,
+            finished: false
+        };
+    }
+    return todos;
+}
+
+export const insertRandomTodos = async (db: SqliteDB, amount: number) => {
+    const todos = generateTodos(amount);
+    await saveTodos(db, todos);
+}
+
 
 // Random data
 
