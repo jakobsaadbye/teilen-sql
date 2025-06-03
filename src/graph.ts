@@ -41,15 +41,15 @@ export class CommitGraph {
     }
 
     /** Returns all the commits that decends from the given commit sorted from oldest to newest */
-    decendants(commit: Commit) : Commit[] {
+    decendants(commitId: string) : Commit[] {
         const D = new Map<string, Commit>();
 
-        const start = this.findNode(commit.id);
+        const start = this.findNode(commitId);
         if (!start) {
             return [];
         }
 
-        const queue = [start];
+        const queue = start.children;
         while (queue.length > 0) {
             const node = queue.pop()!;
             D.set(node.commit.id, node.commit);
@@ -69,7 +69,9 @@ export class CommitGraph {
 
     /** Returns the latest commit in the graph (one with no decendants) */
     tip() {
-        const iceberg = this.decendants(this.root.commit);
+        if (this.nodes.length === 1) return this.head;
+        
+        const iceberg = this.decendants(this.root.commit.id);
         if (iceberg.length === 0) return undefined;
         return iceberg[iceberg.length - 1];
     }

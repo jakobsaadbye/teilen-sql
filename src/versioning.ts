@@ -7,7 +7,7 @@ import { assert, deleteRows, flatten } from "./utils.ts";
 export type Document = {
     id: string
     head: string | null
-    last_pulled_at: number
+    last_pulled_at: number  // @Deprecate: This should not be used anymore. Instead use the info on the last_pulled_commit
     last_pushed_at: number
     last_pushed_commit: string | null
     last_pulled_commit: string | null
@@ -369,8 +369,8 @@ export const receivePullCommits = async (db: SqliteDB, pull: PullRequest): Promi
     const theirDocuments = pull.documents;
 
     const packets: PullPacket[] = [];
-    for (const theirDoc of theirDocuments) {
-        const docId = theirDoc.id;
+    for (const their of theirDocuments) {
+        const docId = their.id;
 
         // Do we have the document?
         const our = ourDocuments.find(doc => doc.id === docId);
@@ -381,7 +381,7 @@ export const receivePullCommits = async (db: SqliteDB, pull: PullRequest): Promi
         }
 
         // Have they pulled before?
-        if (!theirDoc.last_pulled_commit) {
+        if (!their.last_pulled_commit) {
             // Nope, send them all commits
             const commits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE document = ? ORDER BY created_at ASC`, [docId]);
             const changes = await getChangesForCommits(db, commits);
@@ -389,8 +389,11 @@ export const receivePullCommits = async (db: SqliteDB, pull: PullRequest): Promi
             continue;
         }
 
-        // Give the commits they have not seen (those with applied_at > time of last pull)
-        const unseenCommits = await db.select<Commit[]>(`SELECT * FROM "crr_commits" WHERE document = ? AND applied_at > ? ORDER BY created_at ASC`, [docId, theirDoc.last_pulled_at]);
+        // Give back the unseen commits (those that are decendents of their last pulled commit)
+        const G = await db.getCommitGraph(docId);
+        if (!G) continue;
+        
+        const unseenCommits = G.decendants(their.last_pulled_commit);
         const unseenChanges = await getChangesForCommits(db, unseenCommits);
 
         packets.push({ documentId: docId, commits: unseenCommits, changes: unseenChanges });

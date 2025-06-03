@@ -5,6 +5,7 @@ import { insertCrrTablesStmt, } from "./tables.ts";
 import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, getConflicts, getHead, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
 import { getDocumentSnapshot } from "./snapshot.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
+import { getCommitGraph } from "@/src/graph.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code
@@ -196,6 +197,11 @@ export class SqliteDBWrapper {
     /** Return the document with given id */
     async getDocument(documentId: string) {
         return this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+    }
+
+    /** Returns the commit graph for the given document */
+    async getCommitGraph(documentId: string) {
+        return await getCommitGraph(this, documentId);
     }
 
     //////////////////////////

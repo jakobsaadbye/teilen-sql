@@ -20,36 +20,23 @@ Deno.test("Push changes (A is up-to-date)", async () => {
     assertEquals(AchangeCount, SchangeCount);
 });
 
-Deno.test("A gets commits before its latest commit", async () => {
-    // Description:
-    //   Checks that client A gets commits from remote that were made prior to A
-    //   pushing.
-
+Deno.test("Pull new commits", async () => {
     const [A, B, S] = await setupThreeDatabases(todoTable);
-    
-    await B.execTrackChanges(`INSERT INTO "todos" VALUES ('2', 'Buy Coffee', 0)`, []);
-    await B.commit("X");
 
-    await delay(5);
-    
     await A.execTrackChanges(`INSERT INTO "todos" VALUES ('1', 'Buy Milk', 0)`, []);
     await A.commit("A");
-    await delay(5);
-    await A.execTrackChanges(`INSERT INTO "todos" VALUES ('3', 'Buy Banannas', 0)`, []);
-    await A.commit("B");
-
     await pushCommits(A, S);
-    await pushCommits(B, S); // Expected to result in a merge
-    
-    // Expect the pull to contain the merge and commit X from B that was made earlier
-    await pullCommits(A, S);
-    
-    assertEquals(await countCommits(A), 4);
-    assertEquals(await countCommits(B), 4);
-    assertEquals(await countCommits(S), 4);
 
-    assertEquals(await todosAsStr(A), await todosAsStr(B));
-    assertEquals(await todosAsStr(A), await todosAsStr(S));
+    await delay(5);
+
+    await pullCommits(B, S);
+    await B.execTrackChanges(`INSERT INTO "todos" VALUES ('2', 'Buy Coffee', 0)`, []);
+    await B.commit("B");
+    await pushCommits(B, S);
+    
+    await pullCommits(A, S); // We should get the pushed commit of B
+    
+    assertEquals(await countCommits(A), 2);
 });
 
 

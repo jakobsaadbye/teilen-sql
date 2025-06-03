@@ -5,6 +5,7 @@ import { checkout, Commit, commit, discardChanges, Document, getConflicts, prepa
 import { getDocumentSnapshot } from "./snapshot.ts";
 import { createTimestamp } from "./hlc.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
+import { getCommitGraph } from "./graph.ts";
 
 type MessageType = 'dbClose' | 'exec' | 'select' | 'change';
 
@@ -292,9 +293,14 @@ export class SqliteDB {
         return await getHead(this, documentId);
     }
 
-    /** Return the document with given id */
+    /** Return the document with the given id */
     async getDocument(documentId: string) {
         return await this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+    }
+
+    /** Returns the commit graph for the given document */
+    async getCommitGraph(documentId: string) {
+        return await getCommitGraph(this, documentId);
     }
 
     //////////////////////////
