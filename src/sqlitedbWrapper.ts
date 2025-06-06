@@ -4,8 +4,8 @@ import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper, defau
 import { insertCrrTablesStmt, } from "./tables.ts";
 import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, getConflicts, getHead, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
 import { getDocumentSnapshot } from "./snapshot.ts";
+import { getCommitGraph } from "./graph.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
-import { getCommitGraph } from "@/src/graph.ts";
 
 /**
  * A simple wrapper on-top of Deno sqlite3 to let javascript server-side code

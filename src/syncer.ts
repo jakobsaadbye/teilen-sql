@@ -161,14 +161,14 @@ export class Syncer {
             const push = await response.json() as PushResponse;
             switch (push.status) {
             case "ok": {
-                const latestAcknowledgedCommit = pushRequest.commits[pushRequest.commits.length - 1];
+                const last = pushRequest.commits[pushRequest.commits.length - 1];
                 await db.exec(`
                     UPDATE "crr_documents" SET 
                         last_pulled_at = ?,
                         last_pushed_commit = ?, 
                         last_pulled_commit = ? 
                     WHERE id = ?
-                `, [push.appliedAt, latestAcknowledgedCommit, latestAcknowledgedCommit, push.documentId]);
+                `, [push.appliedAt, last.id, last.id, push.documentId]);
                 return;
             }
             case "needs-pull": {
