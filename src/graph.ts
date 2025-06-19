@@ -20,10 +20,10 @@ export class CommitGraph {
     }
 
     /** Returns the ancestor commits (including given) from the given commit sorted from oldest to newest */
-    ancestors(commit: Commit) : Commit[] {
+    ancestors(commitId: string) : Commit[] {
         const A = new Map<string, Commit>();
 
-        const start = this.findNode(commit.id);
+        const start = this.findNode(commitId);
         if (!start) {
             return [];
         }
@@ -61,16 +61,33 @@ export class CommitGraph {
         return commits;
     }
 
+    /** Returns the difference in commits between a and b  */
+    diff(aId: string, bId: string) : Commit[] {
+
+        // Get all the ancestors of both commits
+        const A = this.ancestors(aId);
+        const B = this.ancestors(bId);
+
+        // Prune out the commits they have in common
+        const diff = A.filter(a => {
+            const common = B.find(b => a.id === b.id) !== undefined;
+            if (common) return false;
+            else return true;
+        });
+
+        return diff;
+    }
+
     /** Returns weather commit a is an ancestor of b  */
     isAncestor(a: Commit, b: Commit) {
-        const ancestorsOfB = this.ancestors(b);
+        const ancestorsOfB = this.ancestors(b.id);
         return ancestorsOfB.find(commit => commit.id === a.id) !== undefined;
     }
 
     /** Returns the latest commit in the graph (one with no decendants) */
     tip() {
         if (this.nodes.length === 1) return this.head;
-        
+
         const iceberg = this.decendants(this.root.commit.id);
         if (iceberg.length === 0) return undefined;
         return iceberg[iceberg.length - 1];

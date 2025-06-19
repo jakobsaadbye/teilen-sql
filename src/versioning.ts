@@ -173,14 +173,14 @@ export const checkout = async (db: SqliteDB, targetID: string) => {
 
     if (G.isAncestor(target, head)) {
         await dropDocument(db, target.document);
-        const ancestorsOfTarget = G.ancestors(target);
+        const ancestorsOfTarget = G.ancestors(target.id);
         const changes = flatten(await getChangesForCommits(db, ancestorsOfTarget));
         await fastApplyChanges(db, changes);
     } else {
         // The HEAD must currenly be detached. Instead of rebuilding the state from scratch, start from current HEAD 
         // and apply the commits in-between on-top
-        const ancestorsOfTarget = G.ancestors(target);
-        const ancestorsOfHead = G.ancestors(head);
+        const ancestorsOfTarget = G.ancestors(target.id);
+        const ancestorsOfHead = G.ancestors(head.id);
 
         // Apply the ancestors of the target commit minus those already applied from the head and ...down?
         const ancestorsDiff = ancestorsOfTarget.filter(a => {
@@ -389,12 +389,19 @@ export const receivePullCommits = async (db: SqliteDB, pull: PullRequest): Promi
             continue;
         }
 
-        // Give back the unseen commits (those that are decendents of their last pulled commit)
+        // Give back the unseen commits (the difference in commits between our head and their last pulled commit)
         const G = await db.getCommitGraph(docId);
         if (!G) continue;
-        
-        const unseenCommits = G.decendants(their.last_pulled_commit);
+
+        const diff = G.diff(our.head!, their.last_pulled_commit);
+
+        const unseenCommits = diff;
         const unseenChanges = await getChangesForCommits(db, unseenCommits);
+
+        console.log(`Their last seen commit = ${their.last_pulled_commit}`);
+        for (const c of unseenCommits) {
+            console.log(`Sending: ${c.message}`);
+        }
 
         packets.push({ documentId: docId, commits: unseenCommits, changes: unseenChanges });
     }

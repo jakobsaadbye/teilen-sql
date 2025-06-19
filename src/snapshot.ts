@@ -17,7 +17,7 @@ export const getDocumentSnapshot = async (db: SqliteDB, commit: Commit): Promise
     const G = await getCommitGraph(db, commit.document);
     if (!G) return new DocumentSnapshot(commit.document);
 
-    const pastCommits = G.ancestors(commit);
+    const pastCommits = G.ancestors(commit.id);
     const pastChanges = flatten(await getChangesForCommits(db, pastCommits));
 
     const root = new DocumentSnapshot(commit.document);
