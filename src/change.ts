@@ -670,7 +670,7 @@ const fixFractionalIndexCollisions = async (db: SqliteDB, changes: Change[][]) =
 }
 
 /**
- * @returns True if a is the last writer
+ * @returns True if 'a' is the last writer
  */
 export const isLastWriter = (a: Change | undefined, b: Change | undefined) => {
     if (a === undefined) return false;
@@ -679,10 +679,8 @@ export const isLastWriter = (a: Change | undefined, b: Change | undefined) => {
     if (a.created_at > b.created_at) return true;
     if (a.created_at < b.created_at) return false;
 
-    if (a.value > b.value) return true;
-    if (a.value < b.value) return false;
-
-    return true;
+    // Tie-break with the client id
+    return a.site_id > b.site_id;
 }
 
 export const saveFractionalIndexCols = async (db: SqliteDB, changes: Change[]) => {
