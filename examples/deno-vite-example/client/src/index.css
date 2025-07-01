@@ -1,0 +1,13 @@
+@import "tailwindcss";
+@source "../node_modules/.deno/@jakobsaadbye+teilen-sql@1.0.17/node_modules/@jakobsaadbye/teilen-sql/src/react/";
+
+@theme {
+  --color-offblack: #242424;
+  --animate-spin: spin 20s linear infinite;
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}

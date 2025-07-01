@@ -338,7 +338,8 @@ export const receivePushCommits = async (db: SqliteDB, their: PushRequest): Prom
     // Apply each commit on-top
     for (let i = 0; i < their.commits.length; i++) {
         const changes = their.changes[i];
-        await applyChanges(db, changes);
+        await saveChanges(db, changes);
+        // await applyChanges(db, changes);
     }
 
     const savedAt = await saveCommits(db, their.commits);
@@ -499,6 +500,9 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
         }
     }
 
+    // 1. Is this the first pull ever on this document?
+    // 2. 
+
     // Find a common ancestor commit from which we diverged
     let commonAncestor: Commit | undefined;
     if (!theyHaveIncorporatedOurChanges) {
@@ -584,6 +588,10 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
         //   0       1        2           Yes         Manual 
         const rowConflicts: RowConflict<any>[] = [];
         if (potentialManualConflicts.length > 0) {
+
+            // @Speed - This is very slow to do. If we should even do this at all,
+            // then atleast just recreate the rows that are actually conflicting, instead
+            // of right now, recreating their entire document, just to pull out a few rows.
             const baseSnapshot = await db.getDocumentSnapshot(commonAncestor);
             const theirSnapshot = baseSnapshot.applyChanges(theirChanges);
 

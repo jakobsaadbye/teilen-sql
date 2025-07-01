@@ -1,0 +1,10 @@
+{
+    "tasks" : {
+        "dev" : "deno run --allow-read --allow-ffi --allow-net --allow-env --watch server.ts",
+    },
+    "imports": {
+        "@common/": "../common/",
+        "@jakobsaadbye/teilen-sql": "../../../../teilen-sql/index.ts",
+        "@oak/oak": "jsr:@oak/oak@^17.1.4"
+    }
+}

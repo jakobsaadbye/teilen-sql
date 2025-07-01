@@ -1,7 +1,7 @@
 import { saveChanges, saveFractionalIndexCols, CrrColumn, Change, Client, attachChangeGenerationTriggers, detachChangeGenerationTriggers } from "./change.ts";
 import { sqlExplainExec, generateUniqueId } from "./utils.ts"
 import { insertCrrTablesStmt } from "./tables.ts";
-import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, ConflictChoice, resolveConflict, getPushCount, getHead } from "./versioning.ts";
+import { checkout, Commit, commit, discardChanges, Document, getConflicts, preparePullCommits as preparePullCommits, preparePushCommits as preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits as receivePushCommits, ConflictChoice, resolveConflict, getPushCount, getHead, createDocument } from "./versioning.ts";
 import { getDocumentSnapshot } from "./snapshot.ts";
 import { createTimestamp } from "./hlc.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
@@ -374,6 +374,12 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
     // Get or assign a unique site_id
     await assignSiteId(db);
 
+    // Create a main document if not already created
+    const mainDoc = await db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = 'main'`, []);
+    if (!mainDoc) {
+        await createDocument(db, "main", null);
+    }
+
     return db;
 }
 
@@ -408,7 +414,7 @@ export const execTrackChangesHelper = async (db: SqliteDB, sql: string, params: 
         const tblName = sqlExplainExec(sql);
 
         if (db.crrColumns[tblName] === undefined) {
-            console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it`);
+            console.error(`Table '${tblName}' have not been upgraded to a crr table. Upgrade the table with upgradeTableToCrr("${tblName}") to begin tracking changes on it. Finish the upgrades to the database by calling db.finialize()`);
             return;
         }
 

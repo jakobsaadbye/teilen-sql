@@ -2,7 +2,7 @@ import { Database } from "jsr:@db/sqlite@0.12";
 import { Change, CrrColumn } from "./change.ts";
 import { SqliteForeignKey, SqliteDB, assignSiteId, execTrackChangesHelper, defaultUpgradeOptions } from "./sqlitedb.ts";
 import { insertCrrTablesStmt, } from "./tables.ts";
-import { checkout, Commit, commit, ConflictChoice, discardChanges, Document, getConflicts, getHead, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
+import { checkout, Commit, commit, ConflictChoice, createDocument, discardChanges, Document, getConflicts, getHead, getPushCount, preparePullCommits, preparePushCommits, PullRequest, PushRequest, receivePullCommits, receivePushCommits, resolveConflict } from "./versioning.ts";
 import { getDocumentSnapshot } from "./snapshot.ts";
 import { getCommitGraph } from "./graph.ts";
 import { upgradeTableToCrr } from "./sqlitedbCommon.ts";
@@ -29,6 +29,13 @@ export class SqliteDBWrapper {
         this.crrColumns = {};
 
         this.exec(`PRAGMA foreign_keys = OFF`, []);
+
+        // Create a main document if not already existing
+        this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = 'main'`, []).then(doc => {
+            if (!doc) {
+                createDocument(this, "main", null);
+            }
+        })
     }
 
     async exec(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {

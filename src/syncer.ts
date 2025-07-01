@@ -18,9 +18,10 @@ type Listener = {
 type Options = {
     pullEndpoint: string
     pushEndpoint: string
+    wsEndpoint: string
 
     /** Commit endpoints only need to be defined if mode is git-style */
-    commitPushEndpoint?: string 
+    commitPushEndpoint?: string
     commitPullEndpoint?: string
 }
 
@@ -34,15 +35,30 @@ export class Syncer {
         this.db = db;
         this.options = options;
         this.listeners = [];
+
+        if (options.wsEndpoint) {
+            // @TODO: Add some retry logic in case it fails the first time
+            const ws = new WebSocket(`${options.wsEndpoint}?clientId=${db.siteId}`);
+
+            ws.onmessage = (e) => this.handleWebSocketMessage(ws, e);
+            ws.onopen = (e) => { console.log(`[ws] Websocket connection opened`) };
+            ws.onclose = (e) => { console.log(`[ws] Websocket connection closed. Reason: ${e.reason || "'no reason'"}`) };
+            ws.onerror = (e) => { console.log(`[ws] An error occured`, e) };
+
+            this.socket = ws;
+        }
     }
 
-    async pullChangesHttp() {
-        const client = await this.db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.db.siteId]);
-        if (!client) return;
-        
+    async pullChangesHttp(documentId = "main") {
+        let doc = await this.db.getDocument(documentId);
+        if (!doc) {
+            console.error(`Document '${documentId}' was not found while trying to pull changes`);
+            return;
+        }
+
         const url = new URL(this.options.pullEndpoint);
-        url.searchParams.append("lastPulledAt", '' + client.last_pulled_at);
-        url.searchParams.append("siteId", client.site_id);
+        url.searchParams.append("lastPulledAt", '' + doc.last_pulled_at);
+        url.searchParams.append("siteId", this.db.siteId);
 
         try {
             const res = await fetch(url.toString());
@@ -52,8 +68,9 @@ export class Syncer {
                 const { changes, pulledAt } = data;
 
                 const appliedChanges = await applyChanges(this.db, changes);
-                
-                await this.db.execOrThrow(`UPDATE "crr_clients" SET last_pulled_at = ? WHERE site_id = ?`, [pulledAt, this.db.siteId]);
+
+                doc.last_pulled_at = pulledAt;
+                await saveDocument(this.db, doc);
 
                 return appliedChanges;
             } else {
@@ -66,18 +83,25 @@ export class Syncer {
         }
     }
 
-    async pushChangesHttp() {
-        const client = await this.db.first<Client>(`SELECT * FROM "crr_clients" WHERE site_id = ?`, [this.db.siteId]);
-        if (!client) return;
+    async pushChangesHttp(documentId = "main") {
+        let doc = await this.db.getDocument(documentId);
+        if (!doc) {
+            console.error(`Document '${documentId}' was not found while trying to push changes`);
+            return;
+        }
 
-        const lastPushedAt = client.last_pushed_at;
-        const changes = await this.db.select<Change[]>(`SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? ORDER BY created_at ASC`, [lastPushedAt, this.db.siteId]);
+        const newLastPushedAt = new Date().getTime();
+
+        const changes = await this.db.select<Change[]>(`
+            SELECT * FROM "crr_changes" WHERE applied_at > ? AND site_id = ? AND document = ? ORDER BY created_at ASC
+        `, [doc.last_pushed_at, this.db.siteId, doc.id]);
 
         console.log(`Pushed ${changes.length} changes`);
 
         if (changes.length === 0) return;
 
         const data = JSON.stringify({
+            documentId: doc.id,
             changes
         });
 
@@ -91,8 +115,8 @@ export class Syncer {
             });
 
             if (res.ok) {
-                const err = await this.db.exec(`UPDATE "crr_clients" SET last_pushed_at = ? WHERE site_id = ?`, [new Date().getTime(), this.db.siteId]);
-                if (err !== undefined) console.error(err);
+                doc.last_pushed_at = newLastPushedAt;
+                await saveDocument(this.db, doc);
             } else {
                 const data = await res.json();
                 console.error(`Failed to push changes`, res.status, data);
@@ -102,11 +126,20 @@ export class Syncer {
         }
     }
 
-    async pushChangesWs(ws: WebSocket, documentId = "main") {
-        const doc = await this.db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
+    async pushChangesWs(documentId = "main") {
+        const ws = this.socket;
+        if (!ws) {
+            throw new Error("No websocket is attached to the syncer. Set the 'wsEndpoint' string in the options to begin syncing changes over websocket");
+        }
+
+        let doc = await this.db.first<Document>(`SELECT * FROM "crr_documents" WHERE id = ?`, [documentId]);
         if (!doc) {
-            console.log(`Document '${documentId}' was not found while trying to push changes`);
-            return;
+            if (documentId === "main") {
+                doc = await createDocument(this.db, "main", null);
+            } else {
+                console.error(`Document '${documentId}' was not found while trying to push changes`);
+                return;
+            }
         };
 
         const changes = await this.db.select<Change[]>(`
@@ -115,7 +148,9 @@ export class Syncer {
 
         console.log(`Pushing ${changes.length} changes`);
         if (changes.length === 0) return;
-
+        
+        // @TODO: I think we should send the timestamp at which we push, together with the document so we 
+        // can set it later when we get an ok response from the server to not leave any gap.
         const msg = JSON.stringify({
             type: "push-changes",
             data: {
@@ -160,28 +195,28 @@ export class Syncer {
 
             const push = await response.json() as PushResponse;
             switch (push.status) {
-            case "ok": {
-                const last = pushRequest.commits[pushRequest.commits.length - 1];
-                await db.exec(`
+                case "ok": {
+                    const last = pushRequest.commits[pushRequest.commits.length - 1];
+                    await db.exec(`
                     UPDATE "crr_documents" SET 
                         last_pulled_at = ?,
                         last_pushed_commit = ?, 
                         last_pulled_commit = ? 
                     WHERE id = ?
                 `, [push.appliedAt, last.id, last.id, push.documentId]);
-                return;
-            }
-            case "needs-pull": {
-                console.log(push.message);
-                return push;
-            }
-            case "request-contained-no-commits": {
-                console.error(`Message from server:`, push.message);
-                return push;
-            }
-            case "request-malformed":
-                console.error(`Message from server:`, push.message);
-                return push;
+                    return;
+                }
+                case "needs-pull": {
+                    console.log(push.message);
+                    return push;
+                }
+                case "request-contained-no-commits": {
+                    console.error(`Message from server:`, push.message);
+                    return push;
+                }
+                case "request-malformed":
+                    console.error(`Message from server:`, push.message);
+                    return push;
             }
         } catch (error) {
             console.error("Failed to push commits", error);
@@ -196,10 +231,10 @@ export class Syncer {
         }
 
         const url = new URL(this.options.commitPullEndpoint);
-        
+
         const requestData = await db.preparePullCommits();
         const data = JSON.stringify(requestData);
-        
+
         try {
             const response = await fetch(url, {
                 method: 'PUT',
@@ -221,9 +256,9 @@ export class Syncer {
 
             const pull = await response.json() as PullResponse;
             switch (pull.status) {
-            case "ok": {
-                return await applyPull(db, pull);
-            }
+                case "ok": {
+                    return await applyPull(db, pull);
+                }
             }
         } catch (error) {
             console.error("Failed to pull commits", error);
@@ -246,7 +281,7 @@ export class Syncer {
 
     private notify(event: SyncEvent) {
         if (event.type === "change" && event.data.length === 0) return;
-        
+
         for (const listener of this.listeners) {
             if (listener.type === event.type) {
                 listener.callback(event);
@@ -260,7 +295,7 @@ export class Syncer {
         switch (msg.type) {
             case "push-changes-ok": {
                 const doc = msg.data as Document;
-                doc.last_pushed_at = (new Date).getTime();
+                doc.last_pushed_at = (new Date).getTime();  // @Investigate - Theoreticly, there could have been made new changes inbetween here that now will not get pushed because this timetsamp supercedes them.
                 await saveDocument(this.db, doc);
                 return;
             }
@@ -273,19 +308,19 @@ export class Syncer {
                 const docId = msg.data as string;
                 let doc = await this.db.getDocument(docId);
                 if (!doc) {
-                   doc = await createDocument(this.db, docId, null);
+                    doc = await createDocument(this.db, docId, null);
                 }
 
                 const pullRequest = JSON.stringify({
                     type: "pull-changes",
                     data: doc
                 })
-                
+
                 ws.send(pullRequest);
                 return;
             }
             case "pull-changes-ok": {
-                const doc = msg.data.document as Document; 
+                const doc = msg.data.document as Document;
                 const changes = msg.data.changes as Change[];
 
                 // @NOTE: We use the time at which the server pulled the changes and not the 
@@ -293,7 +328,7 @@ export class Syncer {
                 // might have made changes in the time between us requesting changes and receiving changes
                 // and thus we wouldn't be able to see those changes in the middle
                 const serverPulledAt = msg.data.pulledAt as number;
-                
+
                 try {
                     const appliedChanges = await applyChanges(this.db, changes);
 
