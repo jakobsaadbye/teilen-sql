@@ -5,6 +5,7 @@
     "npm:@jakobsaadbye/teilen-sql@^1.0.12": "1.0.12_vite@6.0.3_@codemirror+view@6.36.3_@types+node@22.5.4",
     "npm:@jakobsaadbye/teilen-sql@^1.0.16": "1.0.17_@codemirror+view@6.36.3_react@18.3.1_react-dom@18.3.1__react@18.3.1_vite@6.0.3_@codemirror+autocomplete@6.18.6_@types+node@22.5.4",
     "npm:@jakobsaadbye/teilen-sql@^1.0.17": "1.0.17_@codemirror+view@6.36.3_react@18.3.1_react-dom@18.3.1__react@18.3.1_vite@6.0.3_@codemirror+autocomplete@6.18.6_@types+node@22.5.4",
+    "npm:@jakobsaadbye/teilen-sql@^1.0.18": "1.0.18_@codemirror+view@6.36.3_react@18.3.1_react-dom@18.3.1__react@18.3.1_vite@6.0.3_@codemirror+autocomplete@6.18.6_@types+node@22.5.4",
     "npm:@tailwindcss/vite@^4.0.8": "4.0.8_vite@6.0.3_@types+node@22.5.4_lightningcss@1.29.1",
     "npm:@types/node@*": "22.5.4",
     "npm:@types/react-dom@^18.3.1": "18.3.5_@types+react@18.3.18",
@@ -352,6 +353,20 @@
     },
     "@jakobsaadbye/teilen-sql@1.0.17_@codemirror+view@6.36.3_react@18.3.1_react-dom@18.3.1__react@18.3.1_vite@6.0.3_@codemirror+autocomplete@6.18.6_@types+node@22.5.4": {
       "integrity": "sha512-WlsQdNo2GbBmZjC9plIVKk+0M+Wg88pt99Ov1RU5ogZh2N4vqrfRjIGmsSG4vj+WJOksCiUbX8b3/oP+feEGhg==",
+      "dependencies": [
+        "@codemirror/autocomplete",
+        "@codemirror/lang-sql",
+        "@codemirror/view",
+        "@uiw/codemirror-theme-github",
+        "@uiw/react-codemirror",
+        "react",
+        "tailwind",
+        "tailwind-merge",
+        "vite-plugin-svgr"
+      ]
+    },
+    "@jakobsaadbye/teilen-sql@1.0.18_@codemirror+view@6.36.3_react@18.3.1_react-dom@18.3.1__react@18.3.1_vite@6.0.3_@codemirror+autocomplete@6.18.6_@types+node@22.5.4": {
+      "integrity": "sha512-v6/w9fKc/BY9IedYtupqoCSBkD1d5de5kRLBt/6L65SgTytdS81z63xeTA0wz+D3lTtRArgyXMLABY423H9qBQ==",
       "dependencies": [
         "@codemirror/autocomplete",
         "@codemirror/lang-sql",

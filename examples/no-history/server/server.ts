@@ -1,6 +1,6 @@
 import { Database } from "jsr:@db/sqlite@0.12";
 import { SqliteDB, SqliteDBWrapper, applyChanges, createDocument, insertCrrTablesStmt } from "@jakobsaadbye/teilen-sql"
-import { tables } from "@common/tables.ts";
+import { tables } from "../common/tables.ts";
 import { Application, Context, Router } from "@oak/oak";
 import { oakCors } from "https://deno.land/x/cors/mod.ts";
 import logger from "https://deno.land/x/oak_logger/mod.ts";

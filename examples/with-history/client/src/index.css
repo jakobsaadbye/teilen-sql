@@ -1,0 +1,26 @@
+@import "tailwindcss";
+@source "../node_modules/.deno/@jakobsaadbye+teilen-sql@1.0.18/node_modules/@jakobsaadbye/teilen-sql/src/react/";
+
+@theme {
+  --color-offblack: #242424;
+  --color-git-green: #426261;
+  --color-git-blue: #405575;
+  --animate-spin: spin 20s linear infinite;
+  --animate-bounce: bounce 0.5s infinite;
+  --animate-wiggle: wiggle 0.3s ease-in-out;
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes wiggle {
+    0%, 100% {
+      transform: rotate(-8deg);
+    }
+    50% {
+      transform: rotate(8deg);
+    }
+  }
+}

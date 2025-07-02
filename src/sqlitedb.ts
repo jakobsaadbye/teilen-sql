@@ -112,12 +112,17 @@ export class SqliteDB {
         const data = await this.send('exec', { sql, params });
         if (options.notify) {
             const tblName = sqlExplainExec(sql);
-            this.channelTableChange.postMessage(tblName);
+            this.notifyTableChange(tblName);
         };
         if (data.error) {
             console.error(`Failed executing`, sql, params, data.error);
         }
         return data.error as Error | undefined;
+    }
+
+    /** @Note Should rarely have to be manually called. Use this only if you are sure that the tablename of the affected sql statement can not be deduced automatically */
+    notifyTableChange(tblName: string) {
+        this.channelTableChange.postMessage(tblName);
     }
 
     async execOrThrow(sql: string, params: any[], options: { notify?: boolean } = { notify: true }) {

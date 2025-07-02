@@ -1,7 +1,7 @@
 import { applyChanges, Change, Client } from "./change.ts";
 import { SqliteDB } from "./sqlitedb.ts";
 import { unique, assert } from "./utils.ts";
-import { applyPull, Commit, createDocument, Document, PullResponse, PushResponse, saveDocument } from "./versioning.ts";
+import { applyPull, Commit, createDocument, Document, PullResponse, PullResult, PushResponse, RowConflict, saveDocument } from "./versioning.ts";
 
 type SyncEventType = "change";
 
@@ -16,14 +16,17 @@ type Listener = {
 }
 
 type Options = {
-    pullEndpoint: string
-    pushEndpoint: string
-    wsEndpoint: string
+    pullEndpoint?: string
+    pushEndpoint?: string
+    wsEndpoint?: string
 
     /** Commit endpoints only need to be defined if mode is git-style */
     commitPushEndpoint?: string
     commitPullEndpoint?: string
 }
+
+type PullError = "has-working-changes" | "bad-configuration" | "server-error";
+type PushError = null | "unresolved-conflicts" | "bad-configuration" | "server-error";
 
 export class Syncer {
     db: SqliteDB
@@ -50,7 +53,12 @@ export class Syncer {
     }
 
     async pullChangesHttp(documentId = "main") {
-        let doc = await this.db.getDocument(documentId);
+        if (!this.options.pullEndpoint) {
+            console.warn(`No pull-endpoint was specified in the syncer options. Set 'pullEndpoint' as an option to pull non-versioned changes`);
+            return;
+        }
+
+        const doc = await this.db.getDocument(documentId);
         if (!doc) {
             console.error(`Document '${documentId}' was not found while trying to pull changes`);
             return;
@@ -84,6 +92,11 @@ export class Syncer {
     }
 
     async pushChangesHttp(documentId = "main") {
+        if (!this.options.pushEndpoint) {
+            console.warn(`No push-endpoint was specified in the syncer options. Set 'pushEndpoint' as an option to push non-versioned changes`);
+            return;
+        }
+
         let doc = await this.db.getDocument(documentId);
         if (!doc) {
             console.error(`Document '${documentId}' was not found while trying to push changes`);
@@ -163,7 +176,8 @@ export class Syncer {
         return;
     }
 
-    async pushCommits(db: SqliteDB, documentId = 'main') {
+    /** Returns undefined if no push occured because of no commits, or non resolved conflicts, otherwise the response from the server */
+    async pushCommits(db: SqliteDB, documentId = 'main') : Promise<PushResponse | undefined> {
         if (!this.options.commitPushEndpoint) {
             console.warn(`No commit push-endpoint was specified in the syncer options. Set 'commitPushEndpoint' as an option to push version controlled changes`);
             return;
@@ -172,6 +186,9 @@ export class Syncer {
         const pushRequest = await db.preparePushCommits(documentId);
         if (pushRequest.commits.length === 0) return;
 
+        const conflicts = await db.select<RowConflict<any>[]>(`SELECT * FROM "crr_conflicts" WHERE document = ?`, [documentId]);
+        if (conflicts.length > 0) return;
+        
         const data = JSON.stringify(pushRequest);
 
         try {
@@ -224,11 +241,15 @@ export class Syncer {
         }
     }
 
-    async pullCommits(db: SqliteDB, documentId = "main") {
+    async pullCommits(db: SqliteDB, documentId = "main") : Promise<PullResult[] | undefined> {
         if (!this.options.commitPullEndpoint) {
             console.warn(`No commit pull-endpoint was specified in the syncer options. Set 'commitPullEndpoint' as an option to pull version controlled changes`);
             return [];
         }
+
+        // Deny pulling when there are changes that haven't been committed (working changes)
+        const workingChanges = await db.getUncommittedChangeCount(documentId);
+        if (workingChanges > 0) return;
 
         const url = new URL(this.options.commitPullEndpoint);
 

@@ -673,6 +673,11 @@ const applyPullPacket = async (db: SqliteDB, their: PullPacket): Promise<PullRes
         const now = (new Date).getTime();
         await db.execOrThrow(`UPDATE "crr_documents" SET head = ?, last_pulled_commit = ?, last_pulled_at = ? WHERE id = ?`, [merge.id, theirLastCommit.id, now, docId]);
 
+        // Notify query subscriptions about any conflicts
+        if (rowConflicts.length > 0) {
+            db.notify(["crr_conflicts"]);
+        }
+
         return {
             documentId: docId,
             merge,
@@ -881,6 +886,10 @@ const saveRowConflicts = async (db: SqliteDB, conflicts: RowConflict<any>[]) => 
         INSERT OR IGNORE INTO "crr_conflicts" (${columns.join(',')})
         VALUES ${sqlPlaceholdersNxM(columns.length, conflicts.length)}
     `, values);
+
+    // @TODO: We currently can't recognize the above tablename because of the 'OR IGNORE' so we explictly say that the table updates. This
+    // should not be like this ...
+    db.notifyTableChange("crr_conflicts");
 }
 
 /**
