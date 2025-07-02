@@ -1,10 +1,4 @@
-# Vite + Deno + React + TypeScript + Teilen SQL
-
-# What
-A simple example to illustrate how to get started using Teilen-sql
-no-history api.
-
-It contains a simple client and server
+# A simple example to get started using the no-history api
 
 ## Quick start
 
