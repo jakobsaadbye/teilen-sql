@@ -176,7 +176,7 @@ function App() {
               <tbody>
                 {commits && commits.map((c, i) => (
                   <tr key={i}>
-                    <td className="px-2 border-r-1 border-white">{c.id}</td>
+                    <td className={`px-2 border-r-1 border-white ${c.parent && c.parent!.split("|").length > 1 ? "text-green-300" : ""}`}>{c.id}</td>
                   </tr>
                 ))}
               </tbody>
@@ -185,7 +185,7 @@ function App() {
             <table className="border-1 border-white w-full">
               <thead className="border-b-1 border-white">
                 <tr className="">
-                  <th className="px-2 border-r-1 border-white">Id</th>
+                  <th className="px-2 border-r-1 border-white text-gray-400">Id</th>
                   <th className="px-2 border-r-1 border-white">Title</th>
                   <th className="px-2 border-r-1 border-white">Finished</th>
                 </tr>
@@ -193,7 +193,7 @@ function App() {
               <tbody className="">
                 {todos && todos.map((t, i) => (
                   <tr key={i} className="h-6">
-                    <td className="px-2 border-r-1 border-white">{t.id}</td>
+                    <td className="px-2 border-r-1 border-white text-gray-400">{t.id}</td>
                     <td className="flex flex-col items-start border-r-1 border-white">
                       <div className={`flex px-2 justify-between items-center w-full ${hasConflicts(t) && "bg-git-green"}`}>
                         <input disabled={hasConflicts(t)} type="text" value={t.title} onChange={e => renameTodo(t, e.target.value)} />
