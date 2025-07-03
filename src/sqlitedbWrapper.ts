@@ -30,11 +30,13 @@ export class SqliteDBWrapper {
 
         this.exec(`PRAGMA foreign_keys = OFF`, []);
 
-        // Create a main document if not already existing
-        this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = 'main'`, []).then(doc => {
-            if (!doc) {
-                createDocument(this, "main", null);
-            }
+        this.exec(insertCrrTablesStmt, []).then(_ => {
+            // Create a main document if not already existing
+            this.first<Document>(`SELECT * FROM "crr_documents" WHERE id = 'main'`, []).then(doc => {
+                if (!doc) {
+                    createDocument(this, "main", null);
+                }
+            });
         })
     }
 
@@ -78,7 +80,7 @@ export class SqliteDBWrapper {
         }
     }
 
-    async tx<T>(fn: () => T) : Promise<T> {
+    async tx<T>(fn: () => T): Promise<T> {
         await this.exec(`BEGIN;`, []);
         try {
             const result = await fn();
