@@ -1,10 +1,10 @@
 export type SelectedItems = {
     type: 'table' | 'row'
-    items: number[]
+    items: (string | number)[]
 } | undefined
 
 export type RightClickTableEvent = {
-    tableIndex: number
+    tableName: string
     mouseX: number
     mouseY: number
 } | undefined

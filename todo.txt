@@ -1,6 +1,7 @@
-// @TODO: Change getChangesForCommits to return Change[] instead of Change[][]!
+TODO:
 
-Fix column values of sqlite text type to be misinterpreted as integer columns when checking out a differrent commit
-  Hint: The problem is probably in 'fastApplyChanges' wherein the 'value' column has an ANY type, so strings column that look
-        like an integer, e.g 60eafc... gets interpreted as numbers, leading to bogus values. We probably need to also store the type of
-        column in "crr_columns" to know how to interpret them ...
+* In-memory database
+* Automigrator
+* Document ownership
+* Better type support?
+* Rewrite the inspector styling to use CSS instead of TW

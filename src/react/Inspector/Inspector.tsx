@@ -15,11 +15,24 @@ import { SqlEditor } from "./components/SqlEditor.tsx";
 
 import XIcon from "./icons/X.tsx";
 import TableIcon from "./icons/Table.tsx";
+import TableGroupIcon from "./icons/TableGroup.tsx";
 import ChevronUp from "./icons/ChevronUp.tsx";
 import ChevronDown from "./icons/ChevronDown.tsx";
+import ChevronRight from "./icons/ChevronRight.tsx";
 import OpenFullscreen from "./icons/OpenFullscreen.tsx";
 import CloseFullscreen from "./icons/CloseFullscreen.tsx";
+import SettingsIcon from "./icons/Settings.tsx";
+import { SqliteDB } from "../../sqlitedb.ts";
 
+type TableGroup = {
+    name: string
+    tables: string[]
+}
+
+const getAllTables = async (db: SqliteDB) => {
+    const tables = await db.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
+    return tables.map(r => r.name);
+}
 
 export const Inspector = ({ children }) => {
     const db = useDB();
@@ -32,7 +45,7 @@ export const Inspector = ({ children }) => {
     const [selectedItems, setSelectedItems] = useState<SelectedItems>(undefined);
     const [tableRightClicked, setTableRightClicked] = useState<RightClickTableEvent>(undefined);
     const [dataRightClicked, setDataRightClicked] = useState<RightClickDataEvent>(undefined);
-    const [st, setSt] = useState<string | undefined>(undefined);
+    const [st, setSt] = useState<string | undefined>(undefined); // selected table
     const [orderBy, setOrderBy] = useState({});
 
     const [editingColumn, setEditingColumn] = useState<{ rowIndex: number, colIndex: number } | undefined>(undefined);
@@ -55,16 +68,21 @@ export const Inspector = ({ children }) => {
         return `SELECT * FROM "${st}" ${orderByString(orderBy)} LIMIT 300`;
     }
 
-    const { data: tables, isLoading: loadingTables } = useQuery<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, [], { once: false });
-    const { data: rows } = useQuery<any[]>(currentQuery(), [], { fireIf: st !== undefined, dependencies: [] });
-    const { data: rowCount } = useQuery<{ count: number }>(`SELECT COUNT(*) AS count FROM "${st}"`, [], { fireIf: st !== undefined, first: true, dependencies: [] });
+    const allTables = useQuery(getAllTables, [], { once: false, tableDependencies: ["sqlite_master"] }).data ?? [];
+
+    const { data: rows } = useQuery<any[]>(currentQuery(), [], { fireIf: st !== undefined, tableDependencies: [] });
+    const { data: rowCount } = useQuery<{ count: number }>(`SELECT COUNT(*) AS count FROM "${st}"`, [], { fireIf: st !== undefined, first: true, tableDependencies: [] });
     const { data: columns } = useQuery<SqliteColumnInfo[]>(`PRAGMA table_info('${st}')`, [], { fireIf: st !== undefined });
 
-    useEffect(() => {
-        if (!loadingTables) {
-            setSt(tables[0].name);
-        }
-    }, [loadingTables]);
+    const userTables = allTables.filter(t => !db.frameworkMadeTables.includes(t));
+    const systemTables = allTables.filter(t => db.frameworkMadeTables.includes(t));
+
+    const teilenGroup: TableGroup = {
+        name: "teilen",
+        tables: systemTables
+    };
+
+    const [showTeilenGroup, setShowTeilenGroup] = useState(false);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -149,8 +167,8 @@ export const Inspector = ({ children }) => {
     const handleDeleteItems = async () => {
         if (selectedItems === undefined) return;
         if (selectedItems.type === 'table') {
-            for (const i of selectedItems.items) {
-                const err = await db.exec(`DROP TABLE IF EXISTS ${tables[i].name}`, []);
+            for (const tableName of selectedItems.items) {
+                const err = await db.exec(`DROP TABLE IF EXISTS ${tableName}`, []);
                 if (err) console.error(err);
             }
         }
@@ -203,33 +221,39 @@ export const Inspector = ({ children }) => {
         return selectedItems.items.findIndex(idx => idx === index) !== -1;
     }
 
-    const handleClickTable = (e: PointerEvent, tableIndex: number) => {
+    const handleClickTable = (e: PointerEvent, tableName: string) => {
         e.preventDefault();
         e.stopPropagation();
         if (e.type === "click") {
             if (e.shiftKey) {
                 if (selectedItems === undefined || selectedItems.type !== 'table') {
-                    setSelectedItems({ type: 'table', items: [tableIndex] });
+                    setSelectedItems({ type: 'table', items: [tableName] });
                 } else {
-                    const anchorA = selectedItems.items[0]
-                    const anchorB = tableIndex;
-                    const between = [];
-                    if (anchorA > anchorB) for (let n = anchorA; n > anchorB; n--) between.push(n);
-                    else for (let n = anchorA; n < anchorB; n++) between.push(n);
+                    const selectedTable = selectedItems.items[0] as string;
 
-                    setSelectedItems({ type: 'table', items: [anchorA, ...between, anchorB] });
+                    const anchorA = allTables.indexOf(selectedTable);
+                    const anchorB = allTables.indexOf(tableName);
+
+                    const between: string[] = [];
+                    if (anchorA < anchorB) {
+                        for (let i = anchorA; i < anchorB; i++) between.push(allTables[i]);
+                    } else {
+                        for (let i = anchorA; i > anchorB; i--) between.push(allTables[i]);
+                    }
+
+                    setSelectedItems({ type: 'table', items: [selectedTable, ...between, tableName] });
                 }
             } else {
                 deselectAll();
-                setSt(tables[tableIndex].name);
-                setSelectedItems({ type: 'table', items: [tableIndex] });
+                setSt(tableName);
+                setSelectedItems({ type: 'table', items: [tableName] });
             }
             if (mode === 'query') {
                 setMode('data');
             }
         }
         if (e.type === "contextmenu") {
-            setTableRightClicked({ tableIndex, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
+            setTableRightClicked({ tableName: tableName, mouseX: Math.floor(e.clientX), mouseY: Math.floor(e.clientY) });
         }
     }
 
@@ -326,7 +350,7 @@ export const Inspector = ({ children }) => {
         <>
             {children}
 
-            <TableDropdown tables={tables} event={tableRightClicked} />
+            <TableDropdown event={tableRightClicked} />
             <DataDropdown event={dataRightClicked} />
 
             <div
@@ -362,19 +386,43 @@ export const Inspector = ({ children }) => {
                     <section className="min-w-48 px-2 pb-12 bg-gray-300 overflow-y-auto">
                         <h2 className="text-lg">Tables</h2>
                         <ul className="ml-1 mr-2 mt-1">
-                            {tables.map((table, i) => {
+                            {userTables.map((table, i) => {
                                 return (
-                                    <div
-                                        key={i}
-                                        onClick={(e) => handleClickTable(e, i)}
-                                        onContextMenu={(e) => handleClickTable(e, i)}
-                                        className={twMerge(`flex gap-x-1 pr-2 hover:bg-gray-200 rounded-sm`, isSelected('table', i) && 'bg-gray-100')}
-                                    >
-                                        <TableIcon className="min-w-6 min-h-6 fill-blue-400" />
-                                        <p className="select-none truncate">{table.name}</p>
-                                    </div>
+                                    <TableItem
+                                        table={table}
+                                        index={i}
+                                        onLeftClick={e => handleClickTable(e, table)}
+                                        onRightClick={e => handleClickTable(e, table)}
+                                        selected={isSelected('table', table)}
+                                    />
                                 )
                             })}
+
+                            {/* Teilen-SQL tables */}
+                            <div className="">
+                                <div className="flex items-center gap-x-1 pr-2 hover:bg-gray-200 rounded-sm" onClick={() => setShowTeilenGroup(!showTeilenGroup)}>
+                                    <TableGroupIcon className="min-w-6 min-h-6 fill-blue-400" />
+                                    <p className="select-none truncate">{teilenGroup.name}</p>
+                                    {showTeilenGroup && <ChevronDown className="w-5 h-5 fill-gray-400" />}
+                                    {!showTeilenGroup && <ChevronRight className="w-5 h-5 fill-gray-400" />}
+                                </div>
+                                {showTeilenGroup && (
+                                    <ul className="pl-4">
+                                        {teilenGroup.tables.map((table, i) => {
+                                            return (
+                                                <TableItem
+                                                    table={table}
+                                                    index={i}
+                                                    onLeftClick={e => handleClickTable(e, table)}
+                                                    onRightClick={e => handleClickTable(e, table)}
+                                                    selected={isSelected('table', table)}
+                                                />
+                                            )
+                                        })}
+                                    </ul>
+                                )}
+                            </div>
+
                         </ul>
                     </section>
                     <div className="h-full w-full overflow-y-auto bg-white focus:outline-none" tabIndex={0} onContextMenu={handleRightClickedDataTable} onFocus={() => setResultTableFocused(true)} onBlur={() => setResultTableFocused(false)}>
@@ -446,7 +494,7 @@ export const Inspector = ({ children }) => {
                             </tbody>
                         </table>
                         <footer className="absolute bottom-8 pt-2 pb-4 mb-0 bg-gray-300 w-full">
-                            <div className="flex justify-between">
+                            <div className="flex justify-between select-none">
                                 <div className="flex space-x-2">
                                     <p onClick={() => setMode('data')} className={`px-4 rounded-sm ${mode === 'data' && 'bg-gray-100'}`}>Data</p>
                                     <p onClick={() => setMode('structure')} className={`px-4 rounded-sm ${mode === 'structure' && 'bg-gray-100'}`}>Structure</p>
@@ -468,5 +516,24 @@ export const Inspector = ({ children }) => {
     );
 }
 
+type Props = {
+    table: string
+    index: number
+    onLeftClick: () => void
+    onRightClick: () => void
+    selected: boolean
+}
 
+const TableItem = ({ table, index, onLeftClick, onRightClick, selected }: Props) => {
+    return (
+        <div
+            onClick={onLeftClick}
+            onContextMenu={onRightClick}
+            className={twMerge(`flex gap-x-1 pr-2 hover:bg-gray-200 rounded-sm`, selected && 'bg-gray-100')}
+        >
+            <TableIcon className="min-w-6 min-h-6 fill-blue-400" />
+            <p className="select-none truncate">{table}</p>
+        </div>
+    )
+}
 

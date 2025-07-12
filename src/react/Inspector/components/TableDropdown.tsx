@@ -3,12 +3,11 @@ import { RightClickTableEvent } from "../types.ts";
 import { useDB } from "../../hooks.ts"
 import { SqliteColumnInfo } from "../../../sqlitedb.ts";
 
-type TDProps = {
-    tables: { name: string }[]
+type Props = {
     event: RightClickTableEvent
 }
 
-export const TableDropdown = ({ tables, event }: TDProps) => {
+export const TableDropdown = ({ event }: Props) => {
     const db = useDB();
 
     const menuRef = useRef<HTMLElement | null>(null);
@@ -16,7 +15,7 @@ export const TableDropdown = ({ tables, event }: TDProps) => {
     const exportSql = async () => {
         if (event === undefined) return
 
-        const tblName = tables[event.tableIndex].name;
+        const tblName = event.tableName;
 
         const cols = await db.select<SqliteColumnInfo[]>(`PRAGMA table_info('${tblName}')`, []);
         const rows = await db.select<any[]>(`SELECT * FROM "${tblName}"`, []);
@@ -37,7 +36,7 @@ export const TableDropdown = ({ tables, event }: TDProps) => {
     const exportJson = async () => {
         if (event === undefined) return
 
-        const tblName = tables[event.tableIndex].name;
+        const tblName = event.tableName;
 
         const rows = await db.select(`SELECT * FROM "${tblName}"`, []);
         const json = JSON.stringify(rows);
@@ -53,7 +52,7 @@ export const TableDropdown = ({ tables, event }: TDProps) => {
     const deleteTable = async () => {
         if (event === undefined) return
 
-        const tblName = tables[event.tableIndex].name;
+        const tblName = event.tableName;
 
         await db.execOrThrow(`DROP TABLE IF EXISTS "${tblName}"`, []);
     }

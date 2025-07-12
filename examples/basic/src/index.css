@@ -1,0 +1,7 @@
+@import "tailwindcss";
+/* @source "../node_modules/.deno/@jakobsaadbye+teilen-sql@1.0.18/node_modules/@jakobsaadbye/teilen-sql/src/react/"; */
+@source "../../../src/react/";
+
+@theme {
+  --color-nice-gray: #242424;
+}

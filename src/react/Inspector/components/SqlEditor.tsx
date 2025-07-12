@@ -3,9 +3,9 @@ import { useDB } from "../../hooks.ts";
 import { sqlDetermineOperation } from "../../../utils.ts";
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from "@codemirror/view";
-import { sql as sqlLang, SQLite } from "@codemirror/lang-sql";
+import { sql as sqlLang, SQLite, SQLNamespace } from "@codemirror/lang-sql";
 import { autocompletion } from "@codemirror/autocomplete";
-import { githubLight } from "@uiw/codemirror-theme-github";
+import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 
 type SqlEditorProps = {
     isOpen: boolean
@@ -17,6 +17,7 @@ export const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => 
     const db = useDB();
 
     const [sql, setSql] = useState(localStorage.getItem("tw_sql_editor_query") ?? "");
+    const [useAutoComplete, setUseAutocomplete] = useState(localStorage.getItem("tw_sql_editor_autocomplete") ?? "Y");
     const [sqlError, setSqlError] = useState(undefined);
 
     const runSql = async (sql: string) => {
@@ -50,9 +51,15 @@ export const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => 
         localStorage.setItem("tw_sql_editor_query", value);
     }
 
+    const toggleAutoComplete = () => {
+        const flipped = useAutoComplete == "Y" ? "" : "Y";
+        setUseAutocomplete(flipped);
+        localStorage.setItem("tw_sql_editor_autocomplete", flipped);
+    }
+
     const customKeymap = keymap.of([
         {
-            key: "ctrl-Enter",
+            key: "ctrl-shift-Enter",
             run: () => {
                 runSql(sql);
                 return true;
@@ -66,31 +73,52 @@ export const SqlEditor = ({ isOpen, fullscreen, onResults }: SqlEditorProps) => 
         ],
     });
 
-    const editorHeight = () => { // @Hack - this is super hacky. Would wish that the height could just be 100%, but codeMirror says no. sigh...
-        if (sqlError) {
-            return fullscreen ? "88vh" : "270px"
-        } else {
-            return fullscreen ? "91vh" : "296px"
+    const createCodemirrorSchema = (): SQLNamespace => {
+        let result = {};
+
+        for (const table of db.tables) {
+            result[table.name] = {
+                self: {
+                    label: table.name,
+                    type: "table"
+                },
+                children: table.columns.map(c => ({
+                    label: c.name,
+                    type: "column",
+                    info: c.type.toLowerCase()
+                }))
+            }
         }
+
+        return result;
+    }
+
+    const codeMirrorExtensions = [
+        sqlLang({ upperCaseKeywords: true, dialect: SQLite, schema: createCodemirrorSchema() }),
+        customKeymap,
+    ];
+
+    if (!useAutoComplete) {
+        codeMirrorExtensions.push(noCompletions);
     }
 
     if (!isOpen) return <></>
     return (
         <div className="w-full p-1 border-l-4 border-gray-300">
-            {sqlError && (
+            <header className="flex justify-between">
                 <div className="">
-                    <p className="text-red-400">{sqlError}</p>
+                    {sqlError && <p className="text-red-400 text-sm">{sqlError}</p>}
                 </div>
-            )}
+                <div className="flex gap-x-2 select-none" onClick={toggleAutoComplete}>
+                    <label htmlFor="useAutoComplete" className="text-sm">Auto-complete</label>
+                    <input name="useAutoComplete" type="checkbox" checked={useAutoComplete == "Y"} onChange={toggleAutoComplete} />
+                </div>
+            </header>
             <CodeMirror
                 value={sql}
                 onChange={textChanged}
-                extensions={[
-                    sqlLang({ upperCaseKeywords: true, dialect: SQLite }),
-                    noCompletions,
-                    customKeymap,
-                ]}
-                height={editorHeight()}
+                extensions={codeMirrorExtensions}
+                height={fullscreen ? "91vh" : "276px"}
                 theme={githubLight}
                 autoFocus={true}
             />

@@ -16,6 +16,14 @@ type SqliteUpdateHookChange = {
     rowid: bigint
 }
 
+export type SqliteTableInfo = {
+    name: string
+    rootpage: number
+    sql: string
+    tbl_name: string
+    type: "table"
+}
+
 export type SqliteColumnInfo = {
     cid: number
     dflt_value: string | null
@@ -37,6 +45,21 @@ export type TemporaryData = {
     clock: string    // Encoded hybrid-logical-clock
     time_travelling: boolean
     document: string
+}
+
+export type TableInfo = {
+    name: string
+    columnNames: string[]
+    columns: ColumnInfo[]
+}
+
+export type ColumnInfo = {
+    id: number
+    name: string
+    defaultValue: any
+    nullable: boolean
+    pk: number
+    type: string
 }
 
 type UpgradeOptions = {
@@ -65,13 +88,15 @@ export const defaultUpgradeOptions: UpgradeOptions = {
 export class SqliteDB {
     name: string;
     siteId = "";
+    tables: TableInfo[] = [];
     pks: { [tblName: string]: string[] } = {};
     crrColumns: { [tbl_name: string]: CrrColumn[] } = {};
-    channelTableChange: BroadcastChannel
     ready: boolean
-
+    frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents", "crr_conflicts"];
+    
     #debug = false;
     mp: MessagePort
+    channelTableChange: BroadcastChannel
     deleteRowidToPk: { [rowid: string]: string }
 
     constructor(name: string, mp: MessagePort) {
@@ -175,10 +200,9 @@ export class SqliteDB {
     }
 
     async upgradeAllTablesToCrr() {
-        const frameworkMadeTables = ["crr_changes", "crr_clients", "crr_columns", "crr_commits", "crr_temp", "crr_documents", "crr_conflicts"];
         const tables = await this.select<{ name: string }[]>(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`, []);
         for (const table of tables) {
-            if (frameworkMadeTables.includes(table.name)) continue;
+            if (this.frameworkMadeTables.includes(table.name)) continue;
             await this.upgradeTableToCrr(table.name);
         }
     }
@@ -203,10 +227,46 @@ export class SqliteDB {
         // Extract the primary keys of tables to be used in changes
         await this.extractPks();
 
+        this.tables = await this.extractTables();
+
         await detachChangeGenerationTriggers(this);
         await attachChangeGenerationTriggers(this);
 
         this.ready = true;
+    }
+
+    private async extractTables() {
+        const tables = await this.select<SqliteTableInfo[]>(`SELECT * FROM sqlite_master WHERE type='table' ORDER BY name`, []);
+
+        const tableInfos: TableInfo[] = [];
+
+        for (const table of tables) {
+            if (this.frameworkMadeTables.includes(table.name)) continue;
+
+            const columnInfos: ColumnInfo[] = [];
+
+            const columns = await this.select<SqliteColumnInfo[]>(`PRAGMA table_info('${table.name}')`, []);
+            for (const c of columns) {
+                columnInfos.push({
+                    id: c.cid,
+                    name: c.name,
+                    defaultValue: c.dflt_value,
+                    nullable: c.notnull === 1 ? false : true,
+                    pk: c.pk,
+                    type: c.type
+                });
+            }
+
+            const columnNames = columnInfos.map(c => c.name);
+
+            tableInfos.push({
+                name: table.name,
+                columnNames: columnNames,
+                columns: columnInfos
+            });
+        }
+
+        return tableInfos;
     }
 
     /** 
@@ -340,11 +400,12 @@ export class SqliteDB {
 /**
  * Creates a new local browser database
  * @param name Name of the database file to store in OPFS
+ * @extra Use name=":memory:" to run the database in memory. This is handy during development
  */
 export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
     const workerScriptPath = `./sqlite-worker.js?dbName=${name}`;
 
-    // Setup up a message channel to communicate with worker thread
+    // Setup up a message channel to communicate with the worker thread
     const { port1, port2 } = new MessageChannel();
     port1.start();
 
@@ -367,7 +428,7 @@ export const createDb = async (name: string = 'main'): Promise<SqliteDB> => {
         throw new Error("Failed to connect to the database");
     }
 
-    console.log(`Connected to the database ...`);
+    console.log(`[INFO] Connected to the database. Press ctrl+i to open the inspector tool`);
     const db = new SqliteDB(name, port1);
 
     // Setup tables
